@@ -31,6 +31,8 @@ int batch_size = 1000000;
 double lower_limit = -5.0; // lower limit for parameters
 double upper_limit = 2.0; // upper limit for parameters
 double k_deg = -1.0;
+int num_cells = 0;
+int num_cpgs = 0;
 
 string concatenate(std::string const& name, float i)
 {
@@ -259,6 +261,14 @@ int parseCommand(int argc, char **argv) {
 		}
 		else if (strcmp(argv[i], "-bs") == 0){
 			batch_size=atoi(argv[i+1]);
+			i=i+2;
+		}
+		else if (strcmp(argv[i], "-ncell") == 0){
+			num_cells=atoi(argv[i+1]);
+			i=i+2;
+		}
+		else if (strcmp(argv[i], "-ncpg") == 0){
+			num_cpgs=atoi(argv[i+1]);
 			i=i+2;
 		}
 		else if (strcmp(argv[i], "-h") == 0){
@@ -511,7 +521,7 @@ vector<vector<double>> cart_product (const vector<vector<double>>& v) {
 
 // nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_distributions_methylation.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -lcurand -lboost_filesystem -lboost_system -lineinfo
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -mt 10.0 -mc 400 -s 0.2 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_methylation -mode k_tx -ll -3.0 -ul 3.0 -d 0.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -mt 10.0 -mc 400 -s 0.2 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_methylation -mode k_tx -ll -3.0 -ul 3.0 -d 0.0 -ncell 10 -ncpg 10
 
 int main(int argc, char** argv)
 {
@@ -522,6 +532,8 @@ int main(int argc, char** argv)
 	}
 	
 	printf("max count: %i\n", max_count);
+	printf("number of cells: %i\n", num_cells);
+	printf("number of cpgs: %i\n", num_cpgs);
 	printf("max time in seconds: %f\n", max_time);
 	printf("batch size: %i\n", batch_size);
 	printf("step size: %f\n", step);
@@ -561,9 +573,6 @@ int main(int argc, char** argv)
 	total_m=(float)total_t/1048576.0;
 	used_m=total_m-free_m;
 	printf ("mem free %f MB, mem total %f MB, mem used %f MB\n", free_m, total_m, used_m);
-	
-	int num_cells = 10;
-	int num_cpgs = 10;
 	
 	printf("number of cells: %i\n", num_cells);
 	
