@@ -699,7 +699,7 @@ int main(int argc, char** argv)
 	// open params file
 	FILE *outfile_parameters;
 	outfile_parameters = fopen(path_parameters.c_str(), "w");//create a file
-	fprintf(outfile_parameters, "on,off,tx,np,p_np,deg,eff,dir,meth,f_meth\n");
+	fprintf(outfile_parameters, "on,off,tx,deg,eff,dir,meth,f_meth,\n");
 	
 	printf("successfully opened output files\n");
 	

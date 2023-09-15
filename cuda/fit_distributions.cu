@@ -352,7 +352,7 @@ double get_parameter_value(string path_simulated_dir_string, string regex_string
 
 // /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_methylation/k_tx/time10_step0.2_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_methylation/k_tx/time10_step0.5_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
 
 // /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/nlaszik/dko_atrinh_102022/seurat/transcript_counts/rep2_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/dko_hesc
 
@@ -469,7 +469,6 @@ int main(int argc, char** argv)
 	
 	string param_header = rows_params[0];
 	for (int i_s = 0; i_s < param_header.size(); i_s++) if (param_header[i_s] == ',') num_params++;
-	num_params = num_params - 1;
 	printf("number of params: %i\n", num_params);
 	
 	double *param_combinations = new double[num_param_combinations * num_params];
@@ -678,7 +677,7 @@ int main(int argc, char** argv)
 	outfile_counts = fopen(path_output_counts.c_str(), "w");//create a file
 	
 	// no need to iterate cells, since each gene in each cell will have the same params
-	fprintf(outfile_parameters, "%s", param_header.c_str());
+	fprintf(outfile_parameters, "%s\n", param_header.c_str());
     for (int i_gene = 0; i_gene < num_genes; i_gene++){
 	    fprintf(outfile_parameters, "%s,", gene_names[i_gene].c_str());
 	    for (int i_param = 0; i_param < num_params; i_param++){
@@ -686,7 +685,7 @@ int main(int argc, char** argv)
 		    fprintf(outfile_parameters, "%.16f,", param_combinations[i_param_combination_param]);
 		}
 		fprintf(outfile_counts, "%s,", gene_names[i_gene].c_str());
-		for (int i_cell = 0; i_cell < num_cells; i_cell++){
+		for (int i_cell = 0; i_cell < num_simulated_cells; i_cell++){
 			int i_cell_param_combination = i_cell * num_param_combinations + best_params[i_gene];
 			fprintf(outfile_counts, "%i,", simulated_counts[i_cell_param_combination]);
 		}
