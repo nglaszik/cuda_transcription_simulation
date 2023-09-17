@@ -27,7 +27,7 @@ char path_real_counts[200]="path_real_counts";
 char path_simulated_dir[200]="path_simulated_dir";
 int batch_size = 0;
 
-int max_count = 400;
+int max_count = 100;
 double step = 1.0;
 double h = 4.0; // bandwidth for kde
 double max_time = 3600.0; // 1 hour
@@ -54,7 +54,7 @@ int dirExists(const char *path)
 		return 0;
 }
 
-tuple <fs::path, fs::path, fs::path, fs::path, fs::path, fs::path> run_path_checks(fs::path path_indir, fs::path path_outdir, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
+tuple <fs::path, fs::path, fs::path, fs::path, fs::path, fs::path> run_path_checks(fs::path path_indir, fs::path path_outdir, int max_count, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
 	// check to see if output_dir exists
 	if (!dirExists(path_outdir.c_str())){
 		printf("%s directory does not exist, please create\n", path_outdir.c_str());
@@ -64,7 +64,7 @@ tuple <fs::path, fs::path, fs::path, fs::path, fs::path, fs::path> run_path_chec
 		printf("%s directory exists\n", path_outdir.c_str());
 	}
 	
-	string rundir_string = concatenate("time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
+	string rundir_string = concatenate("ncell", max_count) + concatenate("_time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
 	fs::path rundir (rundir_string);
 	fs::path path_mode_dir = path_outdir / mode_dir;
 	
@@ -352,7 +352,7 @@ double get_parameter_value(string path_simulated_dir_string, string regex_string
 
 // /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_methylation/k_tx/time10_step0.5_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_methylation/k_on/ncell400_time10_step0.2_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
 
 // /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/nlaszik/dko_atrinh_102022/seurat/transcript_counts/rep2_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/dko_hesc
 
@@ -377,12 +377,14 @@ int main(int argc, char** argv)
 	
 	vector<string> regex_strings{"ncell\\d+(?=_)", "time\\d+\\.?\\d*(?=_)", "step\\d+\\.?\\d*(?=_)", "h\\d+\\.?\\d*(?=_)", "lower-*?\\d+\\.?\\d*(?=_)", "upper-*?\\d+\\.?\\d*(?=_)", "deg\\d+\\.?\\d*"};
 	vector<string> names{"ncell", "time", "step", "h", "lower", "upper", "deg"};
-	vector<double*> values{&max_count, &max_time, &step, &h, &lower_limit, &upper_limit, &k_deg};
+	double max_count_double;
+	vector<double*> values{&max_count_double, &max_time, &step, &h, &lower_limit, &upper_limit, &k_deg};
 	
 	for (int i = 0; i < regex_strings.size(); ++i)
 	{
 		*values[i] = get_parameter_value(input_directory_name.c_str(), regex_strings[i], names[i]);
 	}
+	max_count = (int)max_count_double;
 	
 	// check directories
 	fs::path path_simulated_counts;
@@ -395,7 +397,7 @@ int main(int argc, char** argv)
 	fs::path path_output_parameters;
 	fs::path path_output_mses;
 	
-	tie(path_output_counts, path_output_parameters, path_output_mses, path_simulated_counts, path_simulated_params, path_simulated_kdes) = run_path_checks(path_indir, path_outdir, max_time, step, h, lower_limit, upper_limit, k_deg, path_mode);
+	tie(path_output_counts, path_output_parameters, path_output_mses, path_simulated_counts, path_simulated_params, path_simulated_kdes) = run_path_checks(path_indir, path_outdir, max_count, max_time, step, h, lower_limit, upper_limit, k_deg, path_mode);
 	
 	int num_cells = 0;
 	int num_genes = 0;
