@@ -283,7 +283,7 @@ void setup_kernel(curandState * state, unsigned long seed, int N)
 }
 
 __global__
-void find_initial_best_fit(int num_genes, int batch_size, int num_combinations_in_batch, int i_batch, int max_count, double *initial_distributions, double *real_distributions, double *best_mses, int *best_params){
+void find_initial_best_fit(int num_genes, int batch_size, int num_combinations_in_batch, int i_batch, int max_count, double *simulated_distributions, double *real_distributions, double *best_mses, int *best_params){
 	
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int stride = blockDim.x * gridDim.x;
@@ -295,7 +295,7 @@ void find_initial_best_fit(int num_genes, int batch_size, int num_combinations_i
 			for (int i_count = 0; i_count < max_count; i_count++ ) {
 				int i_real_count = i_gene * max_count + i_count;
 				int i_initial_count = i_param_combination * max_count + i_count;
-				mse += (initial_distributions[i_initial_count] - real_distributions[i_real_count]) * (initial_distributions[i_initial_count] - real_distributions[i_real_count]);
+				mse += (simulated_distributions[i_initial_count] - real_distributions[i_real_count]) * (simulated_distributions[i_initial_count] - real_distributions[i_real_count]);
 			}
 			
 			mse = mse / (double)max_count;
@@ -496,50 +496,8 @@ int main(int argc, char** argv)
 		}
 	}
 	
-	///////////////////
-	// LOAD SIMULATED COUNTS
-	///////////////////	
-	printf("reading simulated counts %s...\n", path_simulated_counts.c_str());
-	ifstream file_simulated_counts(path_simulated_counts.c_str());
-	vector<string> rows_simulated;
-	while (getline(file_simulated_counts, line, '\n'))
-	{
-		rows_simulated.push_back(line); //Get each line of the file as a string
-	}
-	
-	string simulated_counts_header = rows_simulated[0];
-	int num_simulated_cells = 0;
-	for (int i_s = 0; i_s < simulated_counts_header.size(); i_s++) if (simulated_counts_header[i_s] == ',') num_simulated_cells++;
-	printf("number of simulated cells: %i\n", num_simulated_cells);
-	int num_rows_simulated = rows_simulated.size();
-	printf("number of cell combinations: %i\n", num_rows_simulated);
-	
-	assert(num_rows_simulated == num_param_combinations);
-	
-	int *simulated_counts = new int[num_simulated_cells * num_rows_simulated];
-	for (int i_combination = 0; i_combination<num_rows_simulated; ++i_combination){
-		last_pos = (size_t)-1;
-		pos = 0;
-		int i_cell = 0;
-		int count = 0;
-		while (pos != std::string::npos){
-			pos = rows_simulated[i_combination].find(",", last_pos + 1);
-			if (rows_simulated[i_combination].substr(last_pos + 1, pos - last_pos - 1).empty()) {
-				count = 0;
-			}
-			else {
-				count = stoi(rows_simulated[i_combination].substr(last_pos + 1, pos - last_pos - 1));
-				// initialize cell values
-				int i_cell_param_combination = i_cell * num_param_combinations + i_combination;
-				simulated_counts[i_cell_param_combination] = count;
-				i_cell++;
-			}
-			last_pos = pos;
-		}
-	}
-	
 	int *best_params, *real_mrna_count;
-	double *real_distributions, *initial_distributions, *best_mses;
+	double *real_distributions, *simulated_distributions, *best_mses;
 	
 	cudaMallocManaged(&best_mses, num_genes * sizeof(double));
 	cudaMallocManaged(&best_params, num_genes * sizeof(double));
@@ -547,9 +505,9 @@ int main(int argc, char** argv)
 	cudaMallocManaged(&real_mrna_count, num_genes * num_cells * sizeof(int));
 	
 	// init best mses
-	for (int i_fill = 0; i_fill < num_genes; i_fill++) {
-		best_mses[i_fill] = 1.0;
-		best_params[i_fill] = 0;
+	for (int i_gene = 0; i_gene < num_genes; i_gene++) {
+		best_mses[i_gene] = 1.0;
+		best_params[i_gene] = 0;
 	}
 	
 	///////////////////
@@ -596,8 +554,8 @@ int main(int argc, char** argv)
 	
 	printf("number of param combinations: %i, number of batches: %i\n", num_param_combinations, num_batches);
 	
-	cudaMallocManaged(&initial_distributions, batch_size * max_count * sizeof(double));
-	double *initial_distributions_host = new double[batch_size * max_count];
+	cudaMallocManaged(&simulated_distributions, batch_size * max_count * sizeof(double));
+	double *simulated_distributions_host = new double[batch_size * max_count];
 	
 	// Run kernel on the GPU
 	int N = num_genes;
@@ -622,9 +580,9 @@ int main(int argc, char** argv)
 			if (i_batch_combination < num_param_combinations){
 				for (int i_count = 0; i_count < max_count; i_count++){
 					int i_dist = i_combination_in_batch * max_count + i_count;
-					pt = &initial_distributions_host[i_dist];
+					pt = &simulated_distributions_host[i_dist];
 					fread(pt, sizeof(double), 1, file_kde);
-					initial_distributions[i_dist] = initial_distributions_host[i_dist];
+					simulated_distributions[i_dist] = simulated_distributions_host[i_dist];
 				}
 				i_combination_in_batch++;
 			}
@@ -636,7 +594,7 @@ int main(int argc, char** argv)
 		int num_combinations_in_batch = i_combination_in_batch;
 		printf("num combinations in batch: %i\n", num_combinations_in_batch);
 		
-		find_initial_best_fit<<<numBlocks, blockSize>>>(num_genes, batch_size, num_combinations_in_batch, i_batch, max_count, initial_distributions, real_distributions, best_mses, best_params);
+		find_initial_best_fit<<<numBlocks, blockSize>>>(num_genes, batch_size, num_combinations_in_batch, i_batch, max_count, simulated_distributions, real_distributions, best_mses, best_params);
 		
 		cudaEventRecord(stop);
 		cudaDeviceSynchronize();
@@ -662,38 +620,47 @@ int main(int argc, char** argv)
 	FILE *outfile_parameters;
 	outfile_parameters = fopen(path_output_parameters.c_str(), "w");//create a file
 	
-	FILE *outfile_counts;
-	outfile_counts = fopen(path_output_counts.c_str(), "w");//create a file
-	
 	// no need to iterate cells, since each gene in each cell will have the same params
-	fprintf(outfile_parameters, "%s\n", param_header.c_str());
+	fprintf(outfile_parameters, "gene,%s\n", param_header.c_str());
     for (int i_gene = 0; i_gene < num_genes; i_gene++){
 	    fprintf(outfile_parameters, "%s,", gene_names[i_gene].c_str());
 	    for (int i_param = 0; i_param < num_params; i_param++){
 		    int i_param_combination_param = best_params[i_gene] * num_params + i_param;
 		    fprintf(outfile_parameters, "%.16f,", param_combinations[i_param_combination_param]);
 		}
-		fprintf(outfile_counts, "%s,", gene_names[i_gene].c_str());
-		for (int i_cell = 0; i_cell < num_simulated_cells; i_cell++){
-			int i_cell_param_combination = i_cell * num_param_combinations + best_params[i_gene];
-			fprintf(outfile_counts, "%i,", simulated_counts[i_cell_param_combination]);
-		}
 		fprintf(outfile_parameters, "\n");
-		fprintf(outfile_counts, "\n");
     }
-	
 	fclose(outfile_parameters);
+	
+	///////////////////
+	// LOAD SIMULATED COUNTS... test iteration time
+	///////////////////
+	FILE *outfile_counts;
+	outfile_counts = fopen(path_output_counts.c_str(), "w");//create a file
+	
+	printf("reading and writing best simulated counts %s...\n", path_simulated_counts.c_str());
+	ifstream file_simulated_counts(path_simulated_counts.c_str());
+	int i_count_combination = 0;
+	while (getline(file_simulated_counts, line, '\n'))
+	{
+		for (int i_gene = 0; i_gene < num_genes; i_gene++){
+			if (best_params[i_gene] == i_count_combination){
+				fprintf(outfile_counts, "%s,", gene_names[i_gene].c_str());
+				fprintf(outfile_counts, "%s\n", line.c_str());
+			}
+		}
+		i_count_combination++;
+	}
 	fclose(outfile_counts);
 	
 	// Free memory
 	delete [] param_combinations;
-	delete [] initial_distributions_host;
-	delete [] simulated_counts;
+	delete [] simulated_distributions_host;
 	cudaFree(real_mrna_count);
 	cudaFree(best_mses);
 	cudaFree(best_params);
 	cudaFree(real_distributions);
-	cudaFree(initial_distributions);
+	cudaFree(simulated_distributions);
 	return 0;
 }
 
