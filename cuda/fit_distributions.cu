@@ -375,16 +375,14 @@ int main(int argc, char** argv)
 		input_directory_name = path_indir.filename();
 	}
 	
-	vector<string> regex_strings{"time\\d+\\.?\\d*(?=_)", "step\\d+\\.?\\d*(?=_)", "h\\d+\\.?\\d*(?=_)", "lower-*?\\d+\\.?\\d*(?=_)", "upper-*?\\d+\\.?\\d*(?=_)", "deg\\d+\\.?\\d*"};
-	vector<string> names{"time", "step", "h", "lower", "upper", "deg"};
-	vector<double*> values{&max_time, &step, &h, &lower_limit, &upper_limit, &k_deg};
+	vector<string> regex_strings{"ncell\\d+(?=_)", "time\\d+\\.?\\d*(?=_)", "step\\d+\\.?\\d*(?=_)", "h\\d+\\.?\\d*(?=_)", "lower-*?\\d+\\.?\\d*(?=_)", "upper-*?\\d+\\.?\\d*(?=_)", "deg\\d+\\.?\\d*"};
+	vector<string> names{"ncell", "time", "step", "h", "lower", "upper", "deg"};
+	vector<double*> values{&max_count, &max_time, &step, &h, &lower_limit, &upper_limit, &k_deg};
 	
 	for (int i = 0; i < regex_strings.size(); ++i)
 	{
 		*values[i] = get_parameter_value(input_directory_name.c_str(), regex_strings[i], names[i]);
 	}
-	
-	int max_count = 400;
 	
 	// check directories
 	fs::path path_simulated_counts;
