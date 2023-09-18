@@ -53,7 +53,7 @@ int dirExists(const char *path)
 		return 0;
 }
 
-tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int max_count, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
+tuple <fs::path, fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int max_count, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
 	// check to see if output_dir exists
 	if (!dirExists(path_outdir.c_str())){
 		printf("%s directory does not exist, please create\n", path_outdir.c_str());
@@ -63,7 +63,7 @@ tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int m
 		printf("%s directory exists\n", path_outdir.c_str());
 	}
 	
-	string rundir_string =  concatenate("ncell", max_count) + concatenate("_time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
+	string rundir_string =  concatenate("max", max_count) + concatenate("_time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
 	fs::path rundir (rundir_string);
 	fs::path path_mode_dir = path_outdir / mode_dir;
 	
@@ -100,12 +100,14 @@ tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int m
 	fs::path filename_kdes ("kdes.bin");
 	fs::path filename_parameters ("parameters.csv");
 	fs::path filename_counts ("counts.csv");
+	fs::path filename_cpgs ("cpgs.csv");
 	
 	fs::path path_kdes = path_run_dir / filename_kdes;
 	fs::path path_parameters = path_run_dir / filename_parameters;
 	fs::path path_counts = path_run_dir / filename_counts;
+	fs::path path_cpgs = path_run_dir / filename_cpgs;
 	
-	return make_tuple(path_kdes, path_parameters, path_counts);
+	return make_tuple(path_kdes, path_parameters, path_counts, path_cpgs);
 	
 }
 
@@ -394,7 +396,7 @@ void simulate(double max_time, int num_cells, int num_cpgs, int param_to_effect,
 			simulated_distributions[i_dist] = 0.0;
 		}
 		
-		int cpgs_to_methylate = (int)((double)num_cpgs * param_combinations[i_param_combination * num_params + 7]);					// f_meth
+		int cpgs_to_methylate = (int)((double)num_cpgs * param_combinations[i_param_combination * num_params + 6]);					// f_meth
 		
 		for (int i_cell = 0; i_cell < num_cells; i_cell++) {
 			
@@ -420,42 +422,31 @@ void simulate(double max_time, int num_cells, int num_cpgs, int param_to_effect,
 				// 6 = k_meth
 				// 7 = f_meth
 				int cpgs_left_to_methylate = cpgs_to_methylate - num_meth_cpgs[i_cell_param_combination];														
-				prob_methylate = (double)cpgs_left_to_methylate * param_combinations[i_param_combination * num_params + 6];					// k_meth
-				double percent_methylated = (double)num_meth_cpgs[i_cell_param_combination] / (double)num_cpgs;
+				prob_methylate = (double)cpgs_left_to_methylate * param_combinations[i_param_combination * num_params + 5];						// k_meth
 				
-				if (param_combinations[i_param_combination * num_params + 5] == 1.0){														// direction
-					// positive regulation
-					// starts at 1, then increases as a percent of cpgs methylated
-					// when f is reached, some max effect is reached, but unless it's 1 it'll never have full effect
-					cpg_effect = 1.0 + (percent_methylated * param_combinations[i_param_combination * num_params + 4]);						// effect_size
-				} else {
-					// negative regulation
-					// starts at 1, then decreases as a percent of cpgs methylated
-					// when f is reached, some max effect is reached, but unless it's 1 it'll never have full effect
-					cpg_effect = 1.0 - (percent_methylated * param_combinations[i_param_combination * num_params + 4]);						// effect_size
-				}
+				cpg_effect = pow(param_combinations[i_param_combination * num_params + 4], (double)num_meth_cpgs[i_cell_param_combination]);	// effect_size
 				
 				// transcription
 				if (transcriptional_states[i_cell_param_combination] == 0){
 					// gene is off
 					if (param_to_effect == 0){
-						prob_switch = param_combinations[i_param_combination * num_params + 0] * cpg_effect;								// k_on
+						prob_switch = param_combinations[i_param_combination * num_params + 0] * cpg_effect;									// k_on
 					} else {
-						prob_switch = param_combinations[i_param_combination * num_params + 0];												// k_on
+						prob_switch = param_combinations[i_param_combination * num_params + 0];													// k_on
 					}
 					prob_express = 0.0;
 				} else {
 					// gene is on
 					if (param_to_effect == 1){
-						prob_switch = param_combinations[i_param_combination * num_params + 1] * cpg_effect;								// k_off
-						prob_express = param_combinations[i_param_combination * num_params + 2];											// k_tx
+						prob_switch = param_combinations[i_param_combination * num_params + 1] * cpg_effect;									// k_off
+						prob_express = param_combinations[i_param_combination * num_params + 2];												// k_tx
 					}
 					else if (param_to_effect == 3){
-						prob_switch = param_combinations[i_param_combination * num_params + 1];												// k_off
-						prob_express = param_combinations[i_param_combination * num_params + 2] * cpg_effect;								// k_tx
+						prob_switch = param_combinations[i_param_combination * num_params + 1];													// k_off
+						prob_express = param_combinations[i_param_combination * num_params + 2] * cpg_effect;									// k_tx
 					} else {
-						prob_switch = param_combinations[i_param_combination * num_params + 1];												// k_off
-						prob_express = param_combinations[i_param_combination * num_params + 2];											// k_tx
+						prob_switch = param_combinations[i_param_combination * num_params + 1];													// k_off
+						prob_express = param_combinations[i_param_combination * num_params + 2];												// k_tx
 					}
 				}
 				
@@ -521,7 +512,7 @@ vector<vector<double>> cart_product (const vector<vector<double>>& v) {
 
 // nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_distributions_methylation.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -lcurand -lboost_filesystem -lboost_system -lineinfo
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -mt 10.0 -mc 400 -s 0.2 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_methylation -mode k_tx -ll -3.0 -ul 3.0 -d 0.0 -ncell 1000 -ncpg 10
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -mt 10.0 -mc 400 -s 0.25 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_methylation_new -mode k_tx -ll -3.0 -ul 3.0 -d 0.0 -ncell 500 -ncpg 10
 
 int main(int argc, char** argv)
 {
@@ -550,7 +541,8 @@ int main(int argc, char** argv)
 	fs::path path_kdes;
 	fs::path path_parameters;
 	fs::path path_counts;
-	tie(path_kdes, path_parameters, path_counts) = run_path_checks(path_outdir, max_count, max_time, step, h, lower_limit, upper_limit, k_deg, path_mode);
+	fs::path path_cpgs;
+	tie(path_kdes, path_parameters, path_counts, path_cpgs) = run_path_checks(path_outdir, max_count, max_time, step, h, lower_limit, upper_limit, k_deg, path_mode);
 	
 	// test 0.0
 	double test = pow(10.0, -DBL_MAX);
@@ -581,7 +573,7 @@ int main(int argc, char** argv)
 	
 	// creating parameter combinations
 	printf("creating parameter combinations...\n");
-	const int num_params = 8;
+	const int num_params = 7;
 	// these are rates / second 
 	// max rate should be once every 5 seconds = 720.0/hour = 0.2/sec... for high range, maybe instead just do linear rate changes 0.195, 0.19, 0.185, ... etc
 	// for low range, next is maybe 0.19, 0.18, 0.1
@@ -596,9 +588,9 @@ int main(int argc, char** argv)
 	// transformers for gene/gene interactions? a la protein-protein interaction?
 	
 	// since log range, we start with negatives
-	// k_on, k_off, k_tx, k_deg, effect_size, direction, k_meth, f_meth
-	double param_lower_limits[num_params] = {lower_limit, 		lower_limit, 	lower_limit, 	k_deg,	0.1,	0.0,	0.5,	0.2};
-	double param_upper_limits[num_params] = {upper_limit, 		upper_limit, 	upper_limit, 	k_deg,	1.0,	1.0,	5.0,	1.0};
+	// k_on, k_off, k_tx, k_deg, effect_size, k_meth, f_meth
+	double param_lower_limits[num_params] = {lower_limit, 		lower_limit, 	lower_limit, 	k_deg,	-0.05,	0.5,	0.2};
+	double param_upper_limits[num_params] = {upper_limit, 		upper_limit, 	upper_limit, 	k_deg,	0.05,	5.0,	1.0};
 	int param_to_effect = 0;
 	if (strcmp(mode, "k_on") == 0){
 		param_to_effect = 0;
@@ -614,33 +606,26 @@ int main(int argc, char** argv)
 		exit(0);
 	}
 	
-	double step_effect = 0.1;
+	double step_effect = 0.01;
 	double step_meth = 0.5;
 	double step_f = 0.2;
 	
-	double step_sizes[num_params] = {(double)(step), (double)(step), (double)(step), (double)(step), (double)(step_effect), (double)(step), (double)(step_meth), (double)(step_f)};
+	double step_sizes[num_params] = {(double)(step), (double)(step), (double)(step), (double)(step), (double)(step_effect), (double)(step_meth), (double)(step_f)};
 	
 	vector<vector<double>> param_matrix(num_params);
 	// create parameters combinations
 	int num_param_combinations = 1;
 	for (int i_param = 0; i_param < num_params; i_param++){
 		int param_size = 0;
-		if (i_param == 5){
-			param_matrix[i_param].push_back(0.0);
-			param_matrix[i_param].push_back(1.0);
-			param_size = 2;
-		}
-		else {
-			for (double param = param_lower_limits[i_param]; param <= param_upper_limits[i_param]; param += step_sizes[i_param]){
-				if (i_param == 4  || i_param == 6 || i_param == 7){
-					// methylation should not be log scale... we know the ranges of methylation so this works
-					param_matrix[i_param].push_back(param);
-				}
-				else{
-					param_matrix[i_param].push_back(pow(10.0, param));
-				}
-				param_size++;
+		for (double param = param_lower_limits[i_param]; param <= param_upper_limits[i_param]; param += step_sizes[i_param]){
+			if (i_param == 5 || i_param == 6){
+				// methylation should not be log scale... we know the ranges of methylation so this works
+				param_matrix[i_param].push_back(param);
 			}
+			else{
+				param_matrix[i_param].push_back(pow(10.0, param));
+			}
+			param_size++;
 		}
 		num_param_combinations *= param_size;
 	}
@@ -700,10 +685,13 @@ int main(int argc, char** argv)
 	FILE *outfile_counts;
 	outfile_counts = fopen(path_counts.c_str(), "w");
 	
+	FILE *outfile_cpgs;
+	outfile_cpgs = fopen(path_cpgs.c_str(), "w");
+	
 	// open params file
 	FILE *outfile_parameters;
 	outfile_parameters = fopen(path_parameters.c_str(), "w");//create a file
-	fprintf(outfile_parameters, "on,off,tx,deg,eff,dir,meth,f_meth,\n");
+	fprintf(outfile_parameters, "on,off,tx,deg,eff,meth,f_meth,\n");
 	
 	printf("successfully opened output files\n");
 	
@@ -747,8 +735,10 @@ int main(int argc, char** argv)
 			for (int i_cell = 0; i_cell < num_cells; i_cell++){
 				int i_cell_param_combination = i_cell * batch_size + i_batch_combination;
 				fprintf(outfile_counts, "%i,", mrna_count[i_cell_param_combination]);
+				fprintf(outfile_cpgs, "%i,", num_meth_cpgs[i_cell_param_combination]);
 			}
 			fprintf(outfile_counts, "\n");
+			fprintf(outfile_cpgs, "\n");
 		}
 	}
 
