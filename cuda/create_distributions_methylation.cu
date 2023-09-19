@@ -53,7 +53,7 @@ int dirExists(const char *path)
 		return 0;
 }
 
-tuple <fs::path, fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int max_count, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
+tuple <fs::path, fs::path, fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int max_count, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
 	// check to see if output_dir exists
 	if (!dirExists(path_outdir.c_str())){
 		printf("%s directory does not exist, please create\n", path_outdir.c_str());
@@ -101,13 +101,15 @@ tuple <fs::path, fs::path, fs::path, fs::path> run_path_checks(fs::path path_out
 	fs::path filename_parameters ("parameters.csv");
 	fs::path filename_counts ("counts.csv");
 	fs::path filename_cpgs ("cpgs.csv");
+	fs::path filename_times ("times.csv");
 	
 	fs::path path_kdes = path_run_dir / filename_kdes;
 	fs::path path_parameters = path_run_dir / filename_parameters;
 	fs::path path_counts = path_run_dir / filename_counts;
 	fs::path path_cpgs = path_run_dir / filename_cpgs;
+	fs::path path_times = path_run_dir / filename_times;
 	
-	return make_tuple(path_kdes, path_parameters, path_counts, path_cpgs);
+	return make_tuple(path_kdes, path_parameters, path_counts, path_cpgs, path_times);
 	
 }
 
@@ -372,7 +374,7 @@ void setup_kernel(curandState * state, unsigned long seed, int N)
 }
 
 __global__
-void simulate(double max_time, int num_cells, int num_cpgs, int param_to_effect, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, int *num_meth_cpgs, double *simulated_distributions, curandState* globalState){
+void simulate(double max_time, int num_cells, int num_cpgs, int param_to_effect, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, int *num_meth_cpgs, double *time_max_methylation_reached, double *simulated_distributions, curandState* globalState){
 	
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int stride = blockDim.x * gridDim.x;
@@ -389,6 +391,7 @@ void simulate(double max_time, int num_cells, int num_cpgs, int param_to_effect,
 			mrna_count[i_cell_param_combination] = 0;
 			transcriptional_states[i_cell_param_combination] = 0;
 			num_meth_cpgs[i_cell_param_combination] = 0;
+			time_max_methylation_reached[i_cell_param_combination] = 0.0;
 		}
 		
 		for (int i_count = 0; i_count < max_count; i_count++){
@@ -421,7 +424,10 @@ void simulate(double max_time, int num_cells, int num_cpgs, int param_to_effect,
 				// 5 = direction
 				// 6 = k_meth
 				// 7 = f_meth
-				int cpgs_left_to_methylate = cpgs_to_methylate - num_meth_cpgs[i_cell_param_combination];														
+				int cpgs_left_to_methylate = cpgs_to_methylate - num_meth_cpgs[i_cell_param_combination];
+				if (cpgs_left_to_methylate == 0){
+					time_max_methylation_reached[i_cell_param_combination] = time;
+				}														
 				prob_methylate = (double)cpgs_left_to_methylate * param_combinations[i_param_combination * num_params + 5];						// k_meth
 				
 				cpg_effect = pow(param_combinations[i_param_combination * num_params + 4], (double)num_meth_cpgs[i_cell_param_combination]);	// effect_size
@@ -512,7 +518,7 @@ vector<vector<double>> cart_product (const vector<vector<double>>& v) {
 
 // nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_distributions_methylation.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -lcurand -lboost_filesystem -lboost_system -lineinfo
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -mt 10.0 -mc 400 -s 0.25 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_methylation_new -mode k_tx -ll -3.0 -ul 3.0 -d 0.0 -ncell 500 -ncpg 10
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -mt 10.0 -mc 400 -s 0.15 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_methylation_test -mode k_tx -ll -3.0 -ul 3.0 -d 0.0 -ncell 10 -ncpg 10
 
 int main(int argc, char** argv)
 {
@@ -542,7 +548,8 @@ int main(int argc, char** argv)
 	fs::path path_parameters;
 	fs::path path_counts;
 	fs::path path_cpgs;
-	tie(path_kdes, path_parameters, path_counts, path_cpgs) = run_path_checks(path_outdir, max_count, max_time, step, h, lower_limit, upper_limit, k_deg, path_mode);
+	fs::path path_times;
+	tie(path_kdes, path_parameters, path_counts, path_cpgs, path_times) = run_path_checks(path_outdir, max_count, max_time, step, h, lower_limit, upper_limit, k_deg, path_mode);
 	
 	// test 0.0
 	double test = pow(10.0, -DBL_MAX);
@@ -569,7 +576,7 @@ int main(int argc, char** argv)
 	printf("number of cells: %i\n", num_cells);
 	
 	int *transcriptional_states, *mrna_count, *num_meth_cpgs;
-	double *param_combinations, *simulated_distributions;
+	double *param_combinations, *simulated_distributions, *time_max_methylation_reached;
 	
 	// creating parameter combinations
 	printf("creating parameter combinations...\n");
@@ -589,8 +596,8 @@ int main(int argc, char** argv)
 	
 	// since log range, we start with negatives
 	// k_on, k_off, k_tx, k_deg, effect_size, k_meth, f_meth
-	double param_lower_limits[num_params] = {lower_limit, 		lower_limit, 	lower_limit, 	k_deg,	-0.05,	0.5,	0.2};
-	double param_upper_limits[num_params] = {upper_limit, 		upper_limit, 	upper_limit, 	k_deg,	0.05,	5.0,	1.0};
+	double param_lower_limits[num_params] = {lower_limit, 		lower_limit, 	lower_limit, 	k_deg,	-0.1,	0.5,	1.0};
+	double param_upper_limits[num_params] = {upper_limit, 		upper_limit, 	upper_limit, 	k_deg,	0.1,	5.0,	1.0};
 	int param_to_effect = 0;
 	if (strcmp(mode, "k_on") == 0){
 		param_to_effect = 0;
@@ -606,7 +613,7 @@ int main(int argc, char** argv)
 		exit(0);
 	}
 	
-	double step_effect = 0.01;
+	double step_effect = 0.02;
 	double step_meth = 0.5;
 	double step_f = 0.2;
 	
@@ -648,6 +655,7 @@ int main(int argc, char** argv)
 	cudaMallocManaged(&transcriptional_states, batch_size * num_cells * sizeof(int));
 	cudaMallocManaged(&mrna_count, batch_size * num_cells * sizeof(int));
 	cudaMallocManaged(&num_meth_cpgs, batch_size * num_cells * sizeof(int));
+	cudaMallocManaged(&time_max_methylation_reached, batch_size * num_cells * sizeof(double));
 	cudaMallocManaged(&simulated_distributions, batch_size * max_count * sizeof(double));
 	cudaMallocManaged(&param_combinations, batch_size * num_params * sizeof(double));
 	
@@ -688,6 +696,9 @@ int main(int argc, char** argv)
 	FILE *outfile_cpgs;
 	outfile_cpgs = fopen(path_cpgs.c_str(), "w");
 	
+	FILE *outfile_times;
+	outfile_times = fopen(path_times.c_str(), "w");
+	
 	// open params file
 	FILE *outfile_parameters;
 	outfile_parameters = fopen(path_parameters.c_str(), "w");//create a file
@@ -715,7 +726,7 @@ int main(int argc, char** argv)
 		}
 		
 		printf("processing combination batch %i, num combinations: %i...\n", i_batch + 1, i_param_combination);
-		simulate<<<numBlocks, blockSize>>>(max_time, num_cells, num_cpgs, param_to_effect, i_batch, batch_size, i_param_combination, num_params, max_count, h, param_combinations, transcriptional_states, mrna_count, num_meth_cpgs, simulated_distributions, devStates);
+		simulate<<<numBlocks, blockSize>>>(max_time, num_cells, num_cpgs, param_to_effect, i_batch, batch_size, i_param_combination, num_params, max_count, h, param_combinations, transcriptional_states, mrna_count, num_meth_cpgs, time_max_methylation_reached, simulated_distributions, devStates);
 		
 		cudaEventRecord(stop);
 		cudaDeviceSynchronize();
@@ -736,9 +747,11 @@ int main(int argc, char** argv)
 				int i_cell_param_combination = i_cell * batch_size + i_batch_combination;
 				fprintf(outfile_counts, "%i,", mrna_count[i_cell_param_combination]);
 				fprintf(outfile_cpgs, "%i,", num_meth_cpgs[i_cell_param_combination]);
+				fprintf(outfile_times, "%f,", time_max_methylation_reached[i_cell_param_combination]);
 			}
 			fprintf(outfile_counts, "\n");
 			fprintf(outfile_cpgs, "\n");
+			fprintf(outfile_times, "\n");
 		}
 	}
 

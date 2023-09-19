@@ -64,7 +64,7 @@ tuple <fs::path, fs::path, fs::path, fs::path, fs::path, fs::path> run_path_chec
 		printf("%s directory exists\n", path_outdir.c_str());
 	}
 	
-	string rundir_string = concatenate("ncell", max_count) + concatenate("_time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
+	string rundir_string = concatenate("max", max_count) + concatenate("_time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
 	fs::path rundir (rundir_string);
 	fs::path path_mode_dir = path_outdir / mode_dir;
 	
@@ -139,6 +139,7 @@ auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, do
 	const double x_limit = (double)max_count;
 	const double p = 1.0 / (h * max_count);
 	const double hx = (x_limit - x_0)/(Nx - 1);
+	double sum_total = 0.0;
 	
 	for(int i_x = 0; i_x < Nx; ++i_x)
 	{
@@ -150,6 +151,12 @@ auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, do
 			sum += k_gpu((x - (double)mrna_counts[i_cell_param_combination]) / h);
 		}
 		distributions[i_dist] = p * sum;
+		sum_total += p * sum;
+	}
+	// normalize
+	for(int i_x = 0; i_x < Nx; ++i_x){
+		int i_dist = i_param_combination * max_count + i_x;
+		distributions[i_dist] /= sum_total;
 	}
 };
 
@@ -350,11 +357,13 @@ double get_parameter_value(string path_simulated_dir_string, string regex_string
 
 // nvcc /home/data/nlaszik/cuda_simulation/code/cuda/fit_distributions.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -lcurand -lboost_filesystem -lboost_system -lineinfo
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/max400_time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_methylation/k_on/ncell400_time10_step0.2_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_methylation/k_on/max400_time10_step0.2_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/nlaszik/dko_atrinh_102022/seurat/transcript_counts/rep2_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/dko_hesc
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_methylation_new/k_tx/max400_time10_step0.25_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
+
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/nlaszik/dko_atrinh_102022/seurat/transcript_counts/rep2_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/max400_time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/dko_hesc
 
 int main(int argc, char** argv)
 {
@@ -375,8 +384,8 @@ int main(int argc, char** argv)
 		input_directory_name = path_indir.filename();
 	}
 	
-	vector<string> regex_strings{"ncell\\d+(?=_)", "time\\d+\\.?\\d*(?=_)", "step\\d+\\.?\\d*(?=_)", "h\\d+\\.?\\d*(?=_)", "lower-*?\\d+\\.?\\d*(?=_)", "upper-*?\\d+\\.?\\d*(?=_)", "deg\\d+\\.?\\d*"};
-	vector<string> names{"ncell", "time", "step", "h", "lower", "upper", "deg"};
+	vector<string> regex_strings{"max\\d+(?=_)", "time\\d+\\.?\\d*(?=_)", "step\\d+\\.?\\d*(?=_)", "h\\d+\\.?\\d*(?=_)", "lower-*?\\d+\\.?\\d*(?=_)", "upper-*?\\d+\\.?\\d*(?=_)", "deg\\d+\\.?\\d*"};
+	vector<string> names{"max", "time", "step", "h", "lower", "upper", "deg"};
 	double max_count_double;
 	vector<double*> values{&max_count_double, &max_time, &step, &h, &lower_limit, &upper_limit, &k_deg};
 	
@@ -578,11 +587,18 @@ int main(int argc, char** argv)
 		int i_combination_in_batch = 0;
 		for (int i_batch_combination = i_batch * batch_size; i_batch_combination < (i_batch + 1) * batch_size; i_batch_combination++){
 			if (i_batch_combination < num_param_combinations){
+				double sum_total = 0.0;
 				for (int i_count = 0; i_count < max_count; i_count++){
 					int i_dist = i_combination_in_batch * max_count + i_count;
 					pt = &simulated_distributions_host[i_dist];
 					fread(pt, sizeof(double), 1, file_kde);
 					simulated_distributions[i_dist] = simulated_distributions_host[i_dist];
+					sum_total += simulated_distributions_host[i_dist];
+				}
+				// normalize
+				for(int i_count = 0; i_count < max_count; i_count++){
+					int i_dist = i_combination_in_batch * max_count + i_count;
+					simulated_distributions[i_dist] /= sum_total;
 				}
 				i_combination_in_batch++;
 			}
@@ -633,7 +649,7 @@ int main(int argc, char** argv)
 	fclose(outfile_parameters);
 	
 	///////////////////
-	// LOAD SIMULATED COUNTS... test iteration time
+	// LOAD SIMULATED COUNTS
 	///////////////////
 	FILE *outfile_counts;
 	outfile_counts = fopen(path_output_counts.c_str(), "w");//create a file
