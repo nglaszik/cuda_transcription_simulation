@@ -14,6 +14,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <zlib.h>
 
 #include <boost/filesystem.hpp>
 
@@ -31,6 +32,39 @@ int batch_size = 1000000;
 double lower_limit = -5.0; // lower limit for parameters
 double upper_limit = 2.0; // upper limit for parameters
 double k_deg = -1.0;
+
+class GZipWriter {
+public:
+	GZipWriter(const std::string& filename) {
+		file = gzopen(filename.c_str(), "wb");
+		if (!file) {
+			std::cerr << "Failed to open file: " << filename << std::endl;
+		}
+	}
+
+	~GZipWriter() {
+		if (file) {
+			gzclose(file);
+		}
+	}
+
+	bool write_batch(const double* data, size_t size) {
+		if (!file) {
+			return false;
+		}
+
+		int res = gzwrite(file, data, size * sizeof(double));
+		if (res == 0) {
+			std::cerr << "Failed to write to file" << std::endl;
+			return false;
+		}
+
+		return true;
+	}
+
+private:
+	gzFile file = nullptr;
+};
 
 string concatenate(std::string const& name, float i)
 {
@@ -95,7 +129,7 @@ tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int m
 		printf("%s directory exists\n", path_run_dir.c_str());
 	}
 	
-	fs::path filename_kdes ("kdes.bin");
+	fs::path filename_kdes ("kdes.bin.gz");
 	fs::path filename_parameters ("parameters.csv");
 	fs::path filename_counts ("counts.csv");
 	
@@ -474,7 +508,7 @@ vector<vector<double>> cart_product (const vector<vector<double>>& v) {
 // z = i / (width*height);
 //i = x + width*y + width*height*z;
 
-// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_distributions.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions -lcurand -lboost_filesystem -lboost_system -lineinfo
+// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_distributions.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions -lcurand -lboost_filesystem -lboost_system -lineinfo -lz
 
 // /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions -mt 10.0 -mc 400 -s 0.1 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated -mode no_np -ll -3.0 -ul 3.0 -d 0.0
 
@@ -672,8 +706,9 @@ int main(int argc, char** argv)
 	cudaEventRecord(start);
 	
 	// open counts file
-	FILE *outfile_kdes;
-	outfile_kdes = fopen(path_kdes.c_str(), "wb");
+	//FILE *outfile_kdes;
+	//outfile_kdes = fopen(path_kdes.c_str(), "wb");
+	GZipWriter writer(path_kdes.string());
 	
 	FILE *outfile_counts;
 	outfile_counts = fopen(path_counts.c_str(), "w");
@@ -715,13 +750,10 @@ int main(int argc, char** argv)
 		
 		printf("Elapsed seconds: %f\n", milliseconds/1000);
 		
-		double *pt;
+		long unsigned int size_kde_batch = i_param_combination * max_count * kde_granularity;
+		writer.write_batch(simulated_distributions, size_kde_batch);
+		
 		for (int i_batch_combination = 0; i_batch_combination < i_param_combination; i_batch_combination++){
-			for (int i_x = 0; i_x < max_count * kde_granularity; i_x++){
-				int i_dist = i_batch_combination * max_count * kde_granularity + i_x;
-				pt = &simulated_distributions[i_dist];
-				fwrite(pt, sizeof(double), 1, outfile_kdes);
-			}
 			for (int i_cell = 0; i_cell < num_cells; i_cell++){
 				int i_cell_param_combination = i_cell * batch_size + i_batch_combination;
 				fprintf(outfile_counts, "%i,", mrna_count[i_cell_param_combination]);
