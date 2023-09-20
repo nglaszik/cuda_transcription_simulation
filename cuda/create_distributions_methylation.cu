@@ -374,7 +374,7 @@ void setup_kernel(curandState * state, unsigned long seed, int N)
 }
 
 __global__
-void simulate(double max_time, int num_cells, int num_cpgs, int param_to_effect, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, int *num_meth_cpgs, double *time_max_methylation_reached, double *simulated_distributions, curandState* globalState){
+void simulate_initial(double max_time, int num_cells, int num_cpgs, int param_to_effect, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, curandState* globalState){
 	
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int stride = blockDim.x * gridDim.x;
@@ -389,6 +389,104 @@ void simulate(double max_time, int num_cells, int num_cpgs, int param_to_effect,
 		for (int i_cell = 0; i_cell < num_cells; i_cell++){
 			int i_cell_param_combination = i_cell * batch_size + i_param_combination;
 			mrna_count[i_cell_param_combination] = 0;
+			transcriptional_states[i_cell_param_combination] = 0;
+		}
+		
+		// we simulate using the final resting state of the cpgs
+		int cpgs_to_methylate = (int)((double)num_cpgs * param_combinations[i_param_combination * num_params + 6]);
+		double cpg_effect = pow(param_combinations[i_param_combination * num_params + 4], (double)cpgs_to_methylate);
+		
+		for (int i_cell = 0; i_cell < num_cells; i_cell++) {
+			
+			int i_cell_param_combination = i_cell * batch_size + i_param_combination;
+			double time = 0.0;
+			int iteration = 0;
+			
+			// no longer using iterations... need to make sure we get to steady state
+			
+			while (time < max_time && mrna_count[i_cell_param_combination] < max_count) {
+				
+				double prob_switch;
+				double prob_express;
+				double prob_degrade;
+				
+				// degradation
+				prob_degrade = (double)mrna_count[i_cell_param_combination] * param_combinations[i_param_combination * num_params + 3]; //degradation of mrna
+				
+				// transcription
+				if (transcriptional_states[i_cell_param_combination] == 0){
+					// gene is off
+					if (param_to_effect == 0){
+						prob_switch = param_combinations[i_param_combination * num_params + 0] * cpg_effect;									// k_on
+					} else {
+						prob_switch = param_combinations[i_param_combination * num_params + 0];													// k_on
+					}
+					prob_express = 0.0;
+				} else {
+					// gene is on
+					if (param_to_effect == 1){
+						prob_switch = param_combinations[i_param_combination * num_params + 1] * cpg_effect;									// k_off
+						prob_express = param_combinations[i_param_combination * num_params + 2];												// k_tx
+					}
+					else if (param_to_effect == 3){
+						prob_switch = param_combinations[i_param_combination * num_params + 1];													// k_off
+						prob_express = param_combinations[i_param_combination * num_params + 2] * cpg_effect;									// k_tx
+					} else {
+						prob_switch = param_combinations[i_param_combination * num_params + 1];													// k_off
+						prob_express = param_combinations[i_param_combination * num_params + 2];												// k_tx
+					}
+				}
+				
+				// determine which event occurs & timestep
+				double dt = -log(generate(globalState, i_param_combination)) / (prob_switch + prob_express + prob_degrade);
+				double probs [3] = {prob_switch, prob_express, prob_degrade};
+				int len_probs = 3;
+				double prob_event = generate(globalState, i_param_combination);
+				int i_event = determine_event_alt(prob_event, probs, len_probs);
+				
+				time = time + dt;
+				iteration++;
+				
+				if (time < max_time){
+					if (i_event == 0){
+						// switch
+						if (transcriptional_states[i_cell_param_combination] == 1){
+							transcriptional_states[i_cell_param_combination] = 0;
+						} else {
+							transcriptional_states[i_cell_param_combination] = 1;
+						}
+					} 
+					else if (i_event == 1){
+						// transcribe
+						mrna_count[i_cell_param_combination]++;
+					}
+					else {
+						// degrade
+						mrna_count[i_cell_param_combination]--;
+						//printf("Degradation occurred!\n");
+					}
+				}
+			}
+		}	
+	}
+}
+
+__global__
+void simulate(double max_time, int num_cells, int num_cpgs, int param_to_effect, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, int *num_meth_cpgs, double *time_max_methylation_reached, double *simulated_distributions, curandState* globalState){
+	
+	int index = blockIdx.x * blockDim.x + threadIdx.x;
+	int stride = blockDim.x * gridDim.x;
+		
+	for (int i_param_combination = index; i_param_combination < num_combinations_current_batch; i_param_combination+=stride) {
+		
+		if (i_param_combination % 100000 == 0){
+			printf("processing batch combo %i...\n", i_param_combination);
+		}
+		
+		// reset/initialize states
+		for (int i_cell = 0; i_cell < num_cells; i_cell++){
+			// don't reset count, we want it to carry over
+			int i_cell_param_combination = i_cell * batch_size + i_param_combination;
 			transcriptional_states[i_cell_param_combination] = 0;
 			num_meth_cpgs[i_cell_param_combination] = 0;
 			time_max_methylation_reached[i_cell_param_combination] = 0.0;
@@ -518,7 +616,7 @@ vector<vector<double>> cart_product (const vector<vector<double>>& v) {
 
 // nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_distributions_methylation.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -lcurand -lboost_filesystem -lboost_system -lineinfo
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -mt 10.0 -mc 400 -s 0.15 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_methylation_test -mode k_tx -ll -3.0 -ul 3.0 -d 0.0 -ncell 10 -ncpg 10
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -mt 10.0 -mc 400 -s 0.15 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_methylation_test -mode k_tx -ll -3.0 -ul 3.0 -d 0.0 -ncell 500 -ncpg 10
 
 int main(int argc, char** argv)
 {
@@ -597,7 +695,7 @@ int main(int argc, char** argv)
 	// since log range, we start with negatives
 	// k_on, k_off, k_tx, k_deg, effect_size, k_meth, f_meth
 	double param_lower_limits[num_params] = {lower_limit, 		lower_limit, 	lower_limit, 	k_deg,	-0.1,	0.5,	1.0};
-	double param_upper_limits[num_params] = {upper_limit, 		upper_limit, 	upper_limit, 	k_deg,	0.1,	5.0,	1.0};
+	double param_upper_limits[num_params] = {upper_limit, 		upper_limit, 	upper_limit, 	k_deg,	0.1,	0.5,	1.0};
 	int param_to_effect = 0;
 	if (strcmp(mode, "k_on") == 0){
 		param_to_effect = 0;
@@ -726,14 +824,21 @@ int main(int argc, char** argv)
 		}
 		
 		printf("processing combination batch %i, num combinations: %i...\n", i_batch + 1, i_param_combination);
+		
+		simulate_initial<<<numBlocks, blockSize>>>(max_time, num_cells, num_cpgs, param_to_effect, i_batch, batch_size, i_param_combination, num_params, max_count, h, param_combinations, transcriptional_states, mrna_count, devStates);
+		
+		cudaEventRecord(stop);
+		cudaDeviceSynchronize();
+		float milliseconds = 0;
+		cudaEventElapsedTime(&milliseconds, start, stop);
+		printf("Elapsed seconds: %f\n", milliseconds/1000);
+		
 		simulate<<<numBlocks, blockSize>>>(max_time, num_cells, num_cpgs, param_to_effect, i_batch, batch_size, i_param_combination, num_params, max_count, h, param_combinations, transcriptional_states, mrna_count, num_meth_cpgs, time_max_methylation_reached, simulated_distributions, devStates);
 		
 		cudaEventRecord(stop);
 		cudaDeviceSynchronize();
-		
-		float milliseconds = 0;
+		milliseconds = 0;
 		cudaEventElapsedTime(&milliseconds, start, stop);
-		
 		printf("Elapsed seconds: %f\n", milliseconds/1000);
 		
 		double *pt;

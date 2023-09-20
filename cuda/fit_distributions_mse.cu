@@ -355,15 +355,15 @@ double get_parameter_value(string path_simulated_dir_string, string regex_string
 // z = i / (width*height);
 //i = x + width*y + width*height*z;
 
-// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/fit_distributions.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -lcurand -lboost_filesystem -lboost_system -lineinfo
+// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/fit_distributions_mse.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions_mse -lcurand -lboost_filesystem -lboost_system -lineinfo
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/max400_time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions_mse -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/max400_time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_methylation/k_on/max400_time10_step0.2_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions_mse -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_methylation/k_on/max400_time10_step0.2_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_methylation_new/k_tx/max400_time10_step0.25_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions_mse -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_methylation_test/k_tx/max400_time10_step0.15_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/nlaszik/dko_atrinh_102022/seurat/transcript_counts/rep2_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/max400_time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/dko_hesc
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions_mse -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/nlaszik/dko_atrinh_102022/seurat/transcript_counts/rep2_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/max400_time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/dko_hesc
 
 int main(int argc, char** argv)
 {

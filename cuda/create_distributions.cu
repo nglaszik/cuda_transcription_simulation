@@ -51,7 +51,7 @@ int dirExists(const char *path)
 		return 0;
 }
 
-tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
+tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int max_count, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
 	// check to see if output_dir exists
 	if (!dirExists(path_outdir.c_str())){
 		printf("%s directory does not exist, please create\n", path_outdir.c_str());
@@ -61,7 +61,7 @@ tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, float
 		printf("%s directory exists\n", path_outdir.c_str());
 	}
 	
-	string rundir_string = concatenate("time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
+	string rundir_string = concatenate("max", max_count) + concatenate("_time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
 	fs::path rundir (rundir_string);
 	fs::path path_mode_dir = path_outdir / mode_dir;
 	
@@ -97,7 +97,7 @@ tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, float
 	
 	fs::path filename_kdes ("kdes.bin");
 	fs::path filename_parameters ("parameters.csv");
-	fs::path filename_counts ("counts.bin");
+	fs::path filename_counts ("counts.csv");
 	
 	fs::path path_kdes = path_run_dir / filename_kdes;
 	fs::path path_parameters = path_run_dir / filename_parameters;
@@ -121,17 +121,17 @@ auto k(double val)
 }
 
 __device__
-auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, double h, int batch_size, int i_param_combination, int num_cells)
+auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, double h, int batch_size, int i_param_combination, int num_cells, int kde_granularity)
 {
 	const double x_0 = 0.0;
-	const int Nx = max_count;
+	const int Nx = max_count * kde_granularity;
 	const double x_limit = (double)max_count;
 	const double p = 1.0 / (h * max_count);
 	const double hx = (x_limit - x_0)/(Nx - 1);
 	
 	for(int i_x = 0; i_x < Nx; ++i_x)
 	{
-		int i_dist = i_param_combination * max_count + i_x;
+		int i_dist = i_param_combination * Nx + i_x;
 		double x = x_0 + i_x * hx;
 		double sum = 0;
 		for (int i_cell = 0; i_cell < num_cells; i_cell++) {
@@ -145,7 +145,7 @@ auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, do
 };
 
 __global__
-void generate_kde_gpu_parallel(double *distributions, int *mrna_counts, int max_count, double h, int num_genes, int num_cells)
+void generate_kde_gpu_parallel(double *distributions, int *mrna_counts, int max_count, double h, int num_genes, int num_cells, int kde_granularity)
 {
 	
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -153,7 +153,7 @@ void generate_kde_gpu_parallel(double *distributions, int *mrna_counts, int max_
 		
 	for (int i_gene = index; i_gene < num_genes; i_gene+=stride) {
 		
-		generate_kde_gpu(distributions, mrna_counts, max_count, h, num_genes, i_gene, num_cells);
+		generate_kde_gpu(distributions, mrna_counts, max_count, h, num_genes, i_gene, num_cells, kde_granularity);
 		
 	}
 	
@@ -337,7 +337,7 @@ void setup_kernel(curandState * state, unsigned long seed, int N)
 }
 
 __global__
-void simulate(double max_time, int num_cells, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, double *simulated_distributions, curandState* globalState){
+void simulate(double max_time, int num_cells, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, double *simulated_distributions, int kde_granularity, curandState* globalState){
 	
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int stride = blockDim.x * gridDim.x;
@@ -448,7 +448,7 @@ void simulate(double max_time, int num_cells, int i_batch, int batch_size, int n
 			}
 		}
 		
-		generate_kde_gpu(simulated_distributions, mrna_count, max_count, h, batch_size, i_param_combination, num_cells);
+		generate_kde_gpu(simulated_distributions, mrna_count, max_count, h, batch_size, i_param_combination, num_cells, kde_granularity);
 		
 	}
 }
@@ -476,7 +476,7 @@ vector<vector<double>> cart_product (const vector<vector<double>>& v) {
 
 // nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_distributions.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions -lcurand -lboost_filesystem -lboost_system -lineinfo
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions -mi 100000 -mt 1000.0 -mc 400 -s 0.1 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated -mode no_np -ll -3.0 -ul 3.0 -d 0.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions -mt 10.0 -mc 400 -s 0.1 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated -mode no_np -ll -3.0 -ul 3.0 -d 0.0
 
 int main(int argc, char** argv)
 {
@@ -503,7 +503,7 @@ int main(int argc, char** argv)
 	fs::path path_kdes;
 	fs::path path_parameters;
 	fs::path path_counts;
-	tie(path_kdes, path_parameters, path_counts) = run_path_checks(path_outdir, max_time, step, h, lower_limit, upper_limit, k_deg, path_mode);
+	tie(path_kdes, path_parameters, path_counts) = run_path_checks(path_outdir, max_count, max_time, step, h, lower_limit, upper_limit, k_deg, path_mode);
 	
 	// test 0.0
 	double test = pow(10.0, -DBL_MAX);
@@ -513,6 +513,8 @@ int main(int argc, char** argv)
 		printf("0.0 test failed: %f\n", test);
 		exit(0);
 	}
+	
+	int kde_granularity = 2;
 	
 	// test inf
 	double inf_test = 10.0 / 0.0;
@@ -637,8 +639,10 @@ int main(int argc, char** argv)
 	
 	cudaMallocManaged(&transcriptional_states, batch_size * num_cells * sizeof(int));
 	cudaMallocManaged(&mrna_count, batch_size * num_cells * sizeof(int));
-	cudaMallocManaged(&simulated_distributions, batch_size * max_count * sizeof(double));
+	cudaMallocManaged(&simulated_distributions, batch_size * max_count * kde_granularity * sizeof(double));
 	cudaMallocManaged(&param_combinations, batch_size * num_params * sizeof(double));
+	
+	printf("size of distributions: %i\n", batch_size * max_count * kde_granularity);
 	
 	// set up to fit on gpu
 	cudaEvent_t start, stop;
@@ -701,7 +705,7 @@ int main(int argc, char** argv)
 		
 		printf("processing combination batch %i, num combinations: %i...\n", i_batch + 1, i_param_combination);
 		
-		simulate<<<numBlocks, blockSize>>>(max_time, num_cells, i_batch, batch_size, i_param_combination, num_params, max_count, h, param_combinations, transcriptional_states, mrna_count, simulated_distributions, devStates);
+		simulate<<<numBlocks, blockSize>>>(max_time, num_cells, i_batch, batch_size, i_param_combination, num_params, max_count, h, param_combinations, transcriptional_states, mrna_count, simulated_distributions, kde_granularity, devStates);
 		
 		cudaEventRecord(stop);
 		cudaDeviceSynchronize();
@@ -713,8 +717,8 @@ int main(int argc, char** argv)
 		
 		double *pt;
 		for (int i_batch_combination = 0; i_batch_combination < i_param_combination; i_batch_combination++){
-			for (int i_count = 0; i_count < max_count; i_count++){
-				int i_dist = i_batch_combination * max_count + i_count;
+			for (int i_x = 0; i_x < max_count * kde_granularity; i_x++){
+				int i_dist = i_batch_combination * max_count * kde_granularity + i_x;
 				pt = &simulated_distributions[i_dist];
 				fwrite(pt, sizeof(double), 1, outfile_kdes);
 			}

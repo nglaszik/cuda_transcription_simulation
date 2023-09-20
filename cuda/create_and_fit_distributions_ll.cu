@@ -32,6 +32,7 @@ double max_time = 3600.0; // 1 hour
 int batch_size = 1000000;
 double lower_limit = -5.0; // lower limit for parameters
 double upper_limit = 2.0; // upper limit for parameters
+double k_deg = -1.0;
 
 string concatenate(std::string const& name, float i)
 {
@@ -52,7 +53,7 @@ int dirExists(const char *path)
         return 0;
 }
 
-tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, float max_time, float step, float h, float lower_limit, float upper_limit, fs::path mode_dir){
+tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
 	// check to see if output_dir exists
 	if (!dirExists(path_outdir.c_str())){
 		printf("%s directory does not exist, please create\n", path_outdir.c_str());
@@ -62,7 +63,7 @@ tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, float
 		printf("%s directory exists\n", path_outdir.c_str());
 	}
 	
-	string rundir_string = concatenate("time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit);
+	string rundir_string = concatenate("time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
 	fs::path rundir (rundir_string);
 	fs::path path_mode_dir = path_outdir / mode_dir;
 	
@@ -136,6 +137,7 @@ auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, do
 	const double x_limit = (double)max_count;
 	const double p = 1.0 / (h * max_count);
 	const double hx = (x_limit - x_0)/(Nx - 1);
+	double sum_total = 0.0;
 	
 	for(int i_x = 0; i_x < Nx; ++i_x)
 	{
@@ -148,10 +150,29 @@ auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, do
 			//if (i_param_combination == 0) printf("%i,", mrna_counts[i_cell_param_combination]);
 			sum += k_gpu((x - (double)mrna_counts[i_cell_param_combination]) / h);
 		}
-	    //distributions[i_dist] = p * sum;
-		distributions[i_dist] = p * sum * 10;
-		// used to be multiplied by 10... but this fucks with log likelihood stuff
+	    distributions[i_dist] = p * sum;
+		sum_total += p * sum;
 	}
+	// normalize
+	for(int i_x = 0; i_x < Nx; ++i_x){
+		int i_dist = i_param_combination * max_count + i_x;
+		distributions[i_dist] /= sum_total;
+	}
+};
+
+__global__
+void generate_kde_gpu_parallel(double *distributions, int *mrna_counts, int max_count, double h, int num_genes, int num_cells)
+{
+	
+	int index = blockIdx.x * blockDim.x + threadIdx.x;
+	int stride = blockDim.x * gridDim.x;
+		
+	for (int i_gene = index; i_gene < num_genes; i_gene+=stride) {
+		
+		generate_kde_gpu(distributions, mrna_counts, max_count, h, num_genes, i_gene, num_cells);
+		
+	}
+	
 };
 
 auto generate_kde(double *distributions, int *mrna_counts, int max_count, double h, int num_genes, int i_gene, int num_cells)
@@ -171,11 +192,8 @@ auto generate_kde(double *distributions, int *mrna_counts, int max_count, double
 			int i_cell_gene = i_cell * num_genes + i_gene;
 			sum += k((x - (double)mrna_counts[i_cell_gene]) / h);
 		}
-	    //distributions[i_dist] = p * sum;
-		distributions[i_dist] = p * sum * 10;
-	    //printf("%f,", p * sum * 10);
+	    distributions[i_dist] = p * sum;
 	}
-	//printf("\n");
 };
 
 auto kde(double x_limit, std::vector<double> values, double h)
@@ -271,6 +289,10 @@ int parseCommand(int argc, char **argv) {
 			h=atof(argv[i+1]);
 			i=i+2;
 		}
+		else if (strcmp(argv[i], "-d") == 0){
+			k_deg=atof(argv[i+1]);
+			i=i+2;
+		}
 		else if (strcmp(argv[i], "-mc") == 0){
 			max_count=atoi(argv[i+1]);
 			i=i+2;
@@ -290,6 +312,26 @@ double generate(curandState* globalState, int ind)
     double RANDOM = curand_uniform_double( &localState );
     globalState[ind] = localState;
     return RANDOM;
+}
+
+__device__
+int determine_event_alt(double prob_event, double *probs, int len_probs)
+{
+	double sum_probs = 0.0;
+	for(int i=0; i < len_probs; i++){
+		sum_probs += probs[i];
+	}
+	for(int i=0; i < len_probs; i++){
+		probs[i] = probs[i] / sum_probs;
+	}
+	
+	double rand_sum = 0.0;
+	int i = 0;
+	while (rand_sum < prob_event){
+		rand_sum += probs[i];
+		i += 1;
+	}
+	return i - 1;
 }
 
 __device__
@@ -319,7 +361,7 @@ void setup_kernel(curandState * state, unsigned long seed, int N)
 }
 
 __global__
-void simulate(int max_iterations, double max_time, int num_cells, int num_genes, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, double *simulated_distributions, double *real_distributions, double *best_mses, int *best_params, int *best_counts, curandState* globalState){
+void simulate(int max_iterations, double max_time, int num_cells, int num_genes, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, double *simulated_distributions, int *real_mrna_count, double *best_mses, int *best_params, int *best_counts, curandState* globalState){
 	
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int stride = blockDim.x * gridDim.x;
@@ -357,26 +399,46 @@ void simulate(int max_iterations, double max_time, int num_cells, int num_genes,
 				double time = 0.0;
 				int iteration = 0;
 				
-				while (iteration < max_iterations && time < max_time && mrna_count[i_cell_param_combination] < max_count && transcriptional_states[i_cell_param_combination] < 2) {
-						
-					double dt_np = -log(generate(globalState, i_param_combination))/param_combinations[i_param_combination * num_params + 3]; 	// k_np
-					double dt_switch;
-					double dt_express;
+				// no longer using iterations... need to make sure we get to steady state
+				
+				while (time < max_time && mrna_count[i_cell_param_combination] < max_count && (transcriptional_states[i_cell_param_combination] < 2 || mrna_count[i_cell_param_combination] > 0)) {
 					
-					// create times to switch or transcribe
-					if (transcriptional_states[i_cell_param_combination] == 0){
-						// gene is off
-						dt_switch = -log(generate(globalState, i_param_combination))/param_combinations[i_param_combination * num_params + 0];	// k_on
-						dt_express = DBL_MAX;
+					double prob_np;
+					double prob_switch;
+					double prob_express;
+					double prob_degrade;
+					
+					// degradation
+					if (mrna_count[i_cell_param_combination] > 0){
+						prob_degrade = (double)mrna_count[i_cell_param_combination] * param_combinations[i_param_combination * num_params + 5]; //degradation of mrna
 					} else {
-						// gene is on
-						dt_switch = -log(generate(globalState, i_param_combination))/param_combinations[i_param_combination * num_params + 1];	// k_off
-						dt_express = -log(generate(globalState, i_param_combination))/param_combinations[i_param_combination * num_params + 2];	// k_tx
+						prob_degrade = 0.0;
 					}
 					
-					// determine which event occurs first... basically whichever has the shortest time
-					int i_event;
-					double dt = determine_event(dt_np, dt_switch, dt_express, &i_event);
+					// transcription
+					if (transcriptional_states[i_cell_param_combination] < 2){
+						prob_np = param_combinations[i_param_combination * num_params + 3]; 	// k_np
+						if (transcriptional_states[i_cell_param_combination] == 0){
+							// gene is off
+							prob_switch = param_combinations[i_param_combination * num_params + 0];	// k_on
+							prob_express = 0.0;
+						} else {
+							// gene is on
+							prob_switch = param_combinations[i_param_combination * num_params + 1];		// k_off
+							prob_express = param_combinations[i_param_combination * num_params + 2];	// k_tx
+						}
+					} else {
+						prob_np = 0.0;
+						prob_switch = 0.0;
+						prob_express = 0.0;
+					}
+					
+					// determine which event occurs & timestep
+					double dt = -log(generate(globalState, i_param_combination)) / (prob_np + prob_switch + prob_express + prob_degrade);
+					double probs [4] = {prob_np, prob_switch, prob_express, prob_degrade};
+					int len_probs = 4;
+					double prob_event = generate(globalState, i_param_combination);
+					int i_event = determine_event_alt(prob_event, probs, len_probs);
 					
 					//printf("dt_np: %f, dt_switch: %f, dt_express: %f, state: %i, event: %i\n", dt_np, dt_switch, dt_express, transcriptional_states[i_cell_param_combination], i_event);
 					
@@ -395,9 +457,14 @@ void simulate(int max_iterations, double max_time, int num_cells, int num_genes,
 							} else {
 								transcriptional_states[i_cell_param_combination] = 1;
 							}
-						} else {
+						} else if (i_event == 2){
 							// transcribe
 							mrna_count[i_cell_param_combination]++;
+						}
+						else {
+							// degrade
+							mrna_count[i_cell_param_combination]--;
+							//printf("Degradation occurred!\n");
 						}
 					}
 				}
@@ -405,43 +472,30 @@ void simulate(int max_iterations, double max_time, int num_cells, int num_genes,
 		}
 		
 		generate_kde_gpu(simulated_distributions, mrna_count, max_count, h, batch_size, i_param_combination, num_cells);
-		
 		for (int i_gene = 0; i_gene < num_genes; i_gene++) {
-		
-			double mse = 0.0;
-			int i_real_count;
-			int i_simulated_count;
 			
 			double log_likelihood = 0.0;
+			
+			// cycle through counts of REAL distribution! this is saying, what is the likelihood our observation (real data) came from the model?
+			// so kde should be generated
 			for (int i_cell = 0; i_cell < num_cells; i_cell++) {
-				int i_cell_param_combination = i_cell * batch_size + i_param_combination;
-				int i_count = mrna_count[i_cell_param_combination];
-				int i_real_count = i_gene * max_count + i_count;
 				
-				double log_likelihood_addon = log(real_distributions[i_real_count]);
+				int i_cell_gene = i_cell * num_genes + i_gene;
+				int real_count = real_mrna_count[i_cell_gene];
+				int i_simulated_count = i_param_combination * max_count + real_count;
 				
-				if (log_likelihood_addon > 0.0){
-					printf("wtf kde is above 1.0: %f\n", real_distributions[i_real_count]);
-				}
+				log_likelihood += log(simulated_distributions[i_simulated_count]);
 				
-				log_likelihood += log(real_distributions[i_real_count]);
 			}
 			
-			for (int i_count = 0; i_count < max_count; i_count++ ) {
-				i_real_count = i_gene * max_count + i_count;
-				i_simulated_count = i_param_combination * max_count + i_count;
-				mse += (simulated_distributions[i_simulated_count] - real_distributions[i_real_count]) * (simulated_distributions[i_simulated_count] - real_distributions[i_real_count]);
-			}
-			mse = mse / (double)max_count;
-			if (mse < best_mses[i_gene]){
-				best_mses[i_gene] = mse;
+			if (log_likelihood > best_mses[i_gene]){
+				best_mses[i_gene] = log_likelihood;
 				best_params[i_gene] = i_batch * batch_size + i_param_combination;
 				for (int i_cell = 0; i_cell < num_cells; i_cell++) {
 					int i_cell_gene = i_cell * num_genes + i_gene;
 					int i_cell_param_combination = i_cell * batch_size + i_param_combination;
 					best_counts[i_cell_gene] = mrna_count[i_cell_param_combination];
 				}
-				//printf("new best mse found: %.16f for gene %i\n", mse, i_gene);
 			}
 		}
 	}
@@ -468,31 +522,35 @@ vector<vector<double>> cart_product (const vector<vector<double>>& v) {
 // z = i / (width*height);
 //i = x + width*y + width*height*z;
 
-// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_and_fit_distributions_gillespie.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie -lcurand -lboost_filesystem -lboost_system -lineinfo
+// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_and_fit_distributions_gillespie_ll.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_ll -lcurand -lboost_filesystem -lboost_system -lineinfo
 
 // SRP215251
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie -mi 100000 -mt 50.0 -mc 400 -s 1.0 -h 4.0 -bs 2000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP215251/figures/wt/tpm_filtered.csv -o /home/data/nlaszik/cuda_simulation/output/SRP215251/WT -mode no_np -ll -5.0 -ul 1.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_ll -mi 100000 -mt 50.0 -mc 400 -s 1.0 -h 4.0 -bs 2000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP215251/figures/wt/tpm_filtered.csv -o /home/data/nlaszik/cuda_simulation/output/SRP215251/WT -mode no_np -ll -5.0 -ul 1.0 -d -1.0
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie -mi 100000 -mt 50.0 -mc 400 -s 1.0 -h 4.0 -bs 2000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP215251/figures/dko/tpm_filtered.csv -o /home/data/nlaszik/cuda_simulation/output/SRP215251/DKO -mode no_np -ll -5.0 -ul 1.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_ll -mi 100000 -mt 50.0 -mc 400 -s 1.0 -h 4.0 -bs 2000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP215251/figures/dko/tpm_filtered.csv -o /home/data/nlaszik/cuda_simulation/output/SRP215251/DKO -mode no_np -ll -5.0 -ul 1.0 -d -1.0
 
 // SRP313343
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie -mi 100000 -mt 50.0 -mc 400 -s 1.0 -h 4.0 -bs 2000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP313343/seurat/transcript_counts/srr14139729_transcript_counts.filtered.norm.csv -o /home/data/nlaszik/cuda_simulation/output/SRP313343/SRR14139729 -mode no_np -ll -5.0 -ul 1.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_ll -mi 100000 -mt 50.0 -mc 400 -s 1.0 -h 4.0 -bs 2000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP313343/seurat/transcript_counts/srr14139729_transcript_counts.filtered.norm.csv -o /home/data/nlaszik/cuda_simulation/output/SRP313343/SRR14139729 -mode no_np -ll -5.0 -ul 1.0 -d -1.0
 
 // SRP299892
 // smaller batch size due to higher # of cells?
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie -mi 100000 -mt 10.0 -mc 400 -s 0.1 -h 2.0 -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -o /home/data/nlaszik/cuda_simulation/output/SRP299892 -mode no_np -ll -3.0 -ul 3.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_ll -mi 100000 -mt 10.0 -mc 400 -s 0.1 -h 2.0 -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -o /home/data/nlaszik/cuda_simulation/output/SRP299892_ll_alt -mode no_np -ll -3.0 -ul 3.0 -d 0.0
+
+// Test
+// smaller batch size due to higher # of cells?
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_ll -mi 100000 -mt 10.0 -mc 400 -s 0.1 -h 2.0 -bs 1000000 -i /home/data/nlaszik/cuda_simulation/input/test_input.csv -o /home/data/nlaszik/cuda_simulation/output/test -mode no_np -ll -3.0 -ul 3.0 -d 0.0
 
 // DKO
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie -mi 100000 -mt 10.0 -mc 150 -s 0.05 -h 1.0 -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/nlaszik/dko_atrinh_102022/seurat/transcript_counts/rep2_transcript_counts.filtered.norm.csv -o /home/data/nlaszik/cuda_simulation/output/dko_hesc/rep2_multirun_no_np -mode no_np -ll -3.0 -ul 3.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_ll -mi 100000 -mt 10.0 -mc 150 -s 0.05 -h 1.0 -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/nlaszik/dko_atrinh_102022/seurat/transcript_counts/rep2_transcript_counts.filtered.norm.csv -o /home/data/nlaszik/cuda_simulation/output/dko_hesc/rep2_multirun_no_np -mode no_np -ll -3.0 -ul 3.0 -d -1.0
 
 // DKO same median
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie -mi 100000 -mt 50.0 -mc 150 -s 1.0 -h 4.0 -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/dko_hesc/seurat/set_median/rep1_transcript_counts.filtered.norm.csv -o /home/data/nlaszik/cuda_simulation/output/dko_hesc/rep1_gillespie_set_median/ -mode no_np -ll -5.0 -ul 1.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_ll -mi 100000 -mt 50.0 -mc 150 -s 1.0 -h 4.0 -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/dko_hesc/seurat/set_median/rep1_transcript_counts.filtered.norm.csv -o /home/data/nlaszik/cuda_simulation/output/dko_hesc/rep1_gillespie_set_median/ -mode no_np -ll -5.0 -ul 1.0 -d -1.0
 
 // Andrew's data
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie -mi 100000 -mt 50.0 -mc 400 -s 1.0 -h 4.0 -bs 1000000 -i /home/data/Shared/AQPhan/norm_counts.csv -o /home/data/nlaszik/cuda_simulation/output/aqphan/ -mode no_np -ll -5.0 -ul 1.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_ll -mi 100000 -mt 50.0 -mc 400 -s 1.0 -h 4.0 -bs 1000000 -i /home/data/Shared/AQPhan/norm_counts.csv -o /home/data/nlaszik/cuda_simulation/output/aqphan/ -mode no_np -ll -5.0 -ul 1.0 -d -1.0
 
 // SRP364225
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie -mi 100000 -mt 50.0 -mc 400 -s 1.0 -h 4.0 -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP364225/seurat/SRR18335026_transcript_counts.filtered.norm.csv -o /home/data/nlaszik/cuda_simulation/output/SRP364225/SRR18335026_norm/ -mode no_np -ll -5.0 -ul 1.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_ll -mi 100000 -mt 50.0 -mc 400 -s 1.0 -h 4.0 -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP364225/seurat/SRR18335026_transcript_counts.filtered.norm.csv -o /home/data/nlaszik/cuda_simulation/output/SRP364225/SRR18335026_norm/ -mode no_np -ll -5.0 -ul 1.0 -d -1.0
 
 
 int main(int argc, char** argv)
@@ -521,7 +579,7 @@ int main(int argc, char** argv)
 	fs::path path_counts;
 	fs::path path_parameters;
 	fs::path path_mses;
-	tie(path_counts, path_parameters, path_mses) = run_path_checks(path_outdir, max_time, step, h, lower_limit, upper_limit, path_mode);
+	tie(path_counts, path_parameters, path_mses) = run_path_checks(path_outdir, max_time, step, h, lower_limit, upper_limit, k_deg, path_mode);
 	
 	// test 0.0
 	double test = pow(10.0, -DBL_MAX);
@@ -574,19 +632,21 @@ int main(int argc, char** argv)
 	printf("number of cells: %i\n", num_cells);
 	printf("number of genes: %i\n", num_genes);
 	
-	int *best_counts, *best_params;
-	int *real_mrna_count = new int[num_cells * num_genes];
+	int *best_counts, *best_params, *real_mrna_count;
 	double *real_distributions, *simulated_distributions, *best_mses;
+	
+	//int num_bootstraps = 1000;
 	
 	cudaMallocManaged(&best_mses, num_genes * sizeof(double));
 	cudaMallocManaged(&best_params, num_genes * sizeof(int));
 	cudaMallocManaged(&real_distributions, num_genes * max_count * sizeof(double));
 	cudaMallocManaged(&best_counts, num_genes * num_cells * sizeof(int));
+	cudaMallocManaged(&real_mrna_count, num_genes * num_cells * sizeof(int));
 	printf("able to initialize memory on gpu...\n");
 	
 	// init best mses and params... not too necessary for params but w/e
 	for (int i_fill = 0; i_fill < num_genes; i_fill++) {
-		best_mses[i_fill] = 1.0;
+		best_mses[i_fill] = -DBL_MAX;
 		best_params[i_fill] = 0;
 	}
 	printf("able to assign memory on gpu...\n");
@@ -623,10 +683,10 @@ int main(int argc, char** argv)
 		}
 	}
 	
-	for (int i_gene = 0; i_gene < num_genes; i_gene++) {
-		// interpolate distribution counts
-		generate_kde(real_distributions, real_mrna_count, max_count, h, num_genes, i_gene, num_cells);
-	}
+	int N_init = num_genes;
+	int blockSize_init = 32;
+	int numBlocks_init = (N_init + blockSize_init - 1) / blockSize_init;
+	generate_kde_gpu_parallel<<<numBlocks_init, blockSize_init>>>(real_distributions, real_mrna_count, max_count, h, num_genes, num_cells);
 
 	
 	int *transcriptional_states, *mrna_count;
@@ -634,7 +694,7 @@ int main(int argc, char** argv)
 	
 	// creating parameter combinations
 	printf("creating parameter combinations...\n");
-	const int num_params = 5;
+	const int num_params = 6;
 	
 	// these are rates / second 
 	// max rate should be once every 5 seconds = 720.0/hour = 0.2/sec... for high range, maybe instead just do linear rate changes 0.195, 0.19, 0.185, ... etc
@@ -642,7 +702,7 @@ int main(int argc, char** argv)
 	
 	// min rate should 5.0/hour = 0.005/sec... we can actually do smaller increments it seems maybe .0025?
 	
-	// k_on, k_off, k_tx, k_np, p_np
+	// k_on, k_off, k_tx, k_np, p_np, k_deg
 	
 	// perhaps we can do this on log scale?
 	
@@ -652,8 +712,8 @@ int main(int argc, char** argv)
 	
 	// since log range, we start with negatives
 	
-	double param_lower_limits[num_params] = {lower_limit, 		lower_limit, 	lower_limit, 	lower_limit,	0.0};
-	double param_upper_limits[num_params] = {upper_limit, 		upper_limit, 	upper_limit, 	upper_limit,	1.0};
+	double param_lower_limits[num_params] = {lower_limit, 		lower_limit, 	lower_limit, 	lower_limit,	0.0, k_deg};
+	double param_upper_limits[num_params] = {upper_limit, 		upper_limit, 	upper_limit, 	upper_limit,	1.0, k_deg};
 	
 	if (strcmp(mode, "no_np") == 0){
 		param_lower_limits[3] = -DBL_MAX;
@@ -687,11 +747,11 @@ int main(int argc, char** argv)
 		exit(0);
 	}
 	
-	double step_sizes[num_params] = {(double)(step), (double)(step), (double)(step), (double)(step), (double)(step)};
+	double step_sizes[num_params] = {(double)(step), (double)(step), (double)(step), (double)(step), (double)(step), (double)(step)};
 	
 	vector<vector<double>> param_matrix(num_params);
 	// create parameters combinations
-	int num_param_combintations = 1;
+	int num_param_combinations = 1;
 	for (int i_param = 0; i_param < num_params; i_param++){
 		int param_size = 0;
 		if (param_lower_limits[i_param] != -DBL_MAX && param_lower_limits[i_param] != DBL_MAX){
@@ -715,20 +775,20 @@ int main(int argc, char** argv)
 			param_matrix[i_param].push_back(0.0);
 			param_size++;
 		}
-		num_param_combintations *= param_size;
+		num_param_combinations *= param_size;
 	}
 	
-	printf("number of param combinations: %i\n", num_param_combintations);
+	printf("number of param combinations: %i\n", num_param_combinations);
 	
 	vector<vector<double>> param_combinations_vector = cart_product(param_matrix);
 	
 	int num_batches;
-	if (num_param_combintations <= batch_size) {
-		batch_size = num_param_combintations;
+	if (num_param_combinations <= batch_size) {
+		batch_size = num_param_combinations;
 		num_batches = 1;
 	}
 	else {
-		num_batches = (int)ceil(num_param_combintations / batch_size) + 1;
+		num_batches = (int)ceil(num_param_combinations / batch_size) + 1;
 	}
 	
 	printf("num batches: %i, final batch size: %i\n", num_batches, batch_size);
@@ -770,7 +830,7 @@ int main(int argc, char** argv)
 		// assign params vector to gpu memory
 		int i_param_combination = 0;
 		for (int i_batch_combination = i_batch * batch_size; i_batch_combination < (i_batch + 1) * batch_size; i_batch_combination++){
-			if (i_batch_combination < num_param_combintations) {
+			if (i_batch_combination < num_param_combinations) {
 				for (int i_param = 0; i_param < num_params; i_param++){
 					int i_param_combination_param = i_param_combination * num_params + i_param;
 					param_combinations[i_param_combination_param] = param_combinations_vector[i_batch_combination][i_param];
@@ -784,7 +844,7 @@ int main(int argc, char** argv)
 		
 		printf("processing combination batch %i, num combinations: %i...\n", i_batch + 1, i_param_combination);
 		
-		simulate<<<numBlocks, blockSize>>>(max_iterations, max_time, num_cells, num_genes, i_batch, batch_size, i_param_combination, num_params, max_count, h, param_combinations, transcriptional_states, mrna_count, simulated_distributions, real_distributions, best_mses, best_params, best_counts, devStates);
+		simulate<<<numBlocks, blockSize>>>(max_iterations, max_time, num_cells, num_genes, i_batch, batch_size, i_param_combination, num_params, max_count, h, param_combinations, transcriptional_states, mrna_count, simulated_distributions, real_mrna_count, best_mses, best_params, best_counts, devStates);
 		
 		cudaEventRecord(stop);
 		cudaDeviceSynchronize();
@@ -812,7 +872,7 @@ int main(int argc, char** argv)
 	FILE *outfile_parameters;
 	outfile_parameters = fopen(path_parameters.c_str(), "w");//create a file
 	printf("writing %s\n", path_parameters.c_str());
-	fprintf(outfile_parameters, "gene,on,off,tx,np,p_np,\n");
+	fprintf(outfile_parameters, "gene,on,off,tx,np,p_np,deg,\n");
 	for (int i_gene = 0; i_gene < num_genes; i_gene++){
 		fprintf(outfile_parameters, "%s,", gene_names[i_gene].c_str());
 	    for (int i_param = 0; i_param < num_params; i_param++){

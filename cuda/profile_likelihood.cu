@@ -12,21 +12,22 @@
 #include <fstream>
 #include <iterator>
 #include <algorithm>
+#include <regex>
 
 #include <sys/types.h>
 #include <sys/stat.h>
 
 #include <boost/filesystem.hpp>
+#include <boost/algorithm/string/replace.hpp>
 
 using namespace std;
 namespace fs = boost::filesystem;
 
 // init some values
 char path_output_dir[200]="path_output_dir";
-char path_input_matrices[200]="path_input_matrices";
-char path_params[200]="path_params";
+char path_input_counts[200]="path_input_counts";
+char path_simulated_dir[200]="path_simulated_dir";
 char mode[10]="mode";
-int max_iterations = 5000;
 int max_count = 400;
 double step = 1.0;
 double h = 4.0; // bandwidth for kde
@@ -55,64 +56,17 @@ int dirExists(const char *path)
 		return 0;
 }
 
-tuple <fs::path, fs::path> run_path_checks(fs::path path_outdir, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
+tuple <fs::path, fs::path> run_path_checks(fs::path path_indir){
 	// check to see if output_dir exists
-	if (!dirExists(path_outdir.c_str())){
-		printf("%s directory does not exist, please create\n", path_outdir.c_str());
-		exit(0);
-	}
-	else {
-		printf("%s directory exists\n", path_outdir.c_str());
-	}
 	
-	string rundir_string = concatenate("time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
-	fs::path rundir (rundir_string);
-	fs::path path_mode_dir = path_outdir / mode_dir;
+	fs::path filename_output_profiles ("profile_likelihoods.csv");
 	
-	if (!dirExists(path_mode_dir.c_str())){
-		printf("%s does not exist\n", path_mode_dir.c_str());
-		int stat = mkdir(path_mode_dir.c_str(), 0775);
-		if (!stat){
-			printf("%s directory created successfully\n", path_mode_dir.c_str());
-		}
-		else {
-			printf("%s directory could not be created\n", path_mode_dir.c_str());
-			exit(0);
-		}
-	} else {
-		printf("%s directory exists\n", path_mode_dir.c_str());
-	}
+	fs::path path_output_profiles = path_indir / filename_output_profiles;
 	
-	fs::path path_run_dir = path_mode_dir / rundir;
+	fs::path filename_input_parameters ("initial_parameters.csv");
+	fs::path path_input_parameters = path_indir / filename_input_parameters;
 	
-	if (!dirExists(path_run_dir.c_str())){
-		printf("%s does not exist\n", path_run_dir.c_str());
-		int stat = mkdir(path_run_dir.c_str(), 0775);
-		if (!stat){
-			printf("%s directory created successfully\n", path_run_dir.c_str());
-		}
-		else {
-			printf("%s directory could not be created\n", path_run_dir.c_str());
-			exit(0);
-		}
-	} else {
-		printf("%s directory exists\n", path_run_dir.c_str());
-	}
-	
-	fs::path filename_parameters ("profile_parameters.csv");
-	fs::path filename_profiles ("profile_likelihoods.csv");
-	
-	fs::path path_parameters = path_run_dir / filename_parameters;
-	fs::path path_profiles = path_run_dir / filename_profiles;
-	
-	FILE *outfile;
-	printf("testing write to param path...\n");
-	outfile = fopen(filename_parameters.c_str(), "w");//create a file
-	fprintf(outfile, "test");
-	fclose(outfile);
-	printf("write successful\n");
-	
-	return make_tuple(path_parameters, path_profiles);
+	return make_tuple(path_input_parameters, path_output_profiles);
 	
 }
 
@@ -137,6 +91,7 @@ auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, do
 	const double x_limit = (double)max_count;
 	const double p = 1.0 / (h * max_count);
 	const double hx = (x_limit - x_0)/(Nx - 1);
+	double sum_total = 0.0;
 	
 	for(int i_x = 0; i_x < Nx; ++i_x)
 	{
@@ -150,6 +105,12 @@ auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, do
 			sum += k_gpu((x - (double)mrna_counts[i_cell_param_combination]) / h);
 		}
 		distributions[i_dist] = p * sum;
+		sum_total += p * sum;
+	}
+	// normalize
+	for(int i_x = 0; i_x < Nx; ++i_x){
+		int i_dist = i_param_combination * max_count + i_x;
+		distributions[i_dist] /= sum_total;
 	}
 };
 
@@ -242,56 +203,16 @@ float randomFloat(float min, float max) {
 int parseCommand(int argc, char **argv) {
 	for(int i=1;i<argc;) {
 		//printf("argv[%u] = %s\n", i, argv[i]);
-		if (strcmp(argv[i], "-o") == 0){
-			strcpy(path_output_dir, argv[i+1]);
-			i=i+2;
-		}
-		else if (strcmp(argv[i], "-i") == 0){
-			strcpy(path_input_matrices, argv[i+1]);
+		if (strcmp(argv[i], "-i") == 0){
+			strcpy(path_input_counts, argv[i+1]);
 			i=i+2;
 		}
 		else if (strcmp(argv[i], "-p") == 0){
-			strcpy(path_params, argv[i+1]);
-			i=i+2;
-		}
-		else if (strcmp(argv[i], "-mode") == 0){
-			strcpy(mode, argv[i+1]);
-			i=i+2;
-		}
-		else if (strcmp(argv[i], "-mi") == 0){
-			max_iterations=atoi(argv[i+1]);
-			i=i+2;
-		}
-		else if (strcmp(argv[i], "-mt") == 0){
-			max_time=atof(argv[i+1]);
-			i=i+2;
-		}
-		else if (strcmp(argv[i], "-s") == 0){
-			step=atof(argv[i+1]);
-			i=i+2;
-		}
-		else if (strcmp(argv[i], "-ll") == 0){
-			lower_limit=atof(argv[i+1]);
-			i=i+2;
-		}
-		else if (strcmp(argv[i], "-ul") == 0){
-			upper_limit=atof(argv[i+1]);
+			strcpy(path_simulated_dir, argv[i+1]);
 			i=i+2;
 		}
 		else if (strcmp(argv[i], "-bs") == 0){
 			batch_size=atoi(argv[i+1]);
-			i=i+2;
-		}
-		else if (strcmp(argv[i], "-h") == 0){
-			h=atof(argv[i+1]);
-			i=i+2;
-		}
-		else if (strcmp(argv[i], "-d") == 0){
-			k_deg=atof(argv[i+1]);
-			i=i+2;
-		}
-		else if (strcmp(argv[i], "-mc") == 0){
-			max_count=atoi(argv[i+1]);
 			i=i+2;
 		}
 		else{
@@ -359,7 +280,7 @@ void setup_kernel(curandState * state, unsigned long seed, int N)
 }
 
 __global__
-void simulate(int max_iterations, double max_time, int num_cells, int num_genes, int num_genes_in_batch, int num_combinations_per_gene, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, double *simulated_distributions, int *real_mrna_count, double *log_likelihoods, curandState* globalState){
+void simulate(double max_time, int num_cells, int num_genes, int num_genes_in_batch, int num_combinations_per_gene, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, double *simulated_distributions, int *real_mrna_count, double *log_likelihoods, curandState* globalState){
 	
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int stride = blockDim.x * gridDim.x;
@@ -490,10 +411,6 @@ void simulate(int max_iterations, double max_time, int num_cells, int num_genes,
 			
 			int i_simulated_count = i_param_combination * max_count + real_count;
 			
-			if (simulated_distributions[i_simulated_count] > 1){
-				printf("%f\n", simulated_distributions[i_simulated_count]);
-			}
-			
 			log_likelihood += log(simulated_distributions[i_simulated_count]);
 			
 		}
@@ -547,19 +464,38 @@ vector<vector<double>> cart_product (const vector<vector<double>>& v) {
 	return s;
 }
 
+double get_parameter_value(string path_simulated_dir_string, string regex_string, string name){
+	
+	std::smatch match;
+	std::regex regexp(regex_string);
+	
+	if (regex_search(path_simulated_dir_string, match, regexp)){
+		string match_string = match.str();
+		boost::replace_all(match_string, name, "");
+		printf("%s: %s\n", name.c_str(), match_string.c_str());
+		double value = stof(match_string);
+		return(value);
+	}
+	else {
+		printf("%s not found\n", name.c_str());
+		exit(0);
+	}
+	
+}
+
 // 3D to 1D and reverse
 // x = i % width;
 // y = (i / width)%height;
 // z = i / (width*height);
 // i = x + width*y + width*height*z;
 
-// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_and_fit_distributions_gillespie_profile_ll.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_profile_ll -lcurand -lboost_filesystem -lboost_system -lineinfo
+// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/profile_likelihood.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/profile_likelihood -lcurand -lboost_filesystem -lboost_system -lineinfo
 
 // SRP299892
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_profile_ll -mi 100000 -mt 10.0 -mc 400 -s 0.1 -h 2.0 -bs 1000000 -p /home/data/nlaszik/cuda_simulation/output/SRP299892_ll/no_np/time10_step0.1_h2_lower-3_upper3_deg0/initial_parameters.csv -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -o /home/data/nlaszik/cuda_simulation/output/SRP299892_ll -mode no_np -ll -3.0 -ul 3.0 -d 0.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/profile_likelihood -bs 1000000 -p /home/data/nlaszik/cuda_simulation/output/SRP299892_ll/no_np/max400_time10_step0.1_h2_lower-3_upper3_deg0 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv
 
 // TEST
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_and_fit_distributions_gillespie_profile_ll -mi 100000 -mt 10.0 -mc 400 -s 0.1 -h 2.0 -bs 1000000 -p /home/data/nlaszik/cuda_simulation/output/test/no_np/time10_step0.1_h2_lower-3_upper3_deg0/initial_parameters.csv -i /home/data/nlaszik/cuda_simulation/input/test_input.csv -o /home/data/nlaszik/cuda_simulation/output/test -mode no_np -ll -3.0 -ul 3.0 -d 0.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/profile_likelihood -bs 1000000 -p /home/data/nlaszik/cuda_simulation/output/test/no_np/max400_time10_step0.1_h2_lower-3_upper3_deg0 -i /home/data/nlaszik/cuda_simulation/input/test_input.csv
 
 int main(int argc, char** argv)
 {
@@ -569,24 +505,41 @@ int main(int argc, char** argv)
 		exit(0);
 	}
 	
+	// get simulation data from
+	fs::path path_indir (path_simulated_dir);
+	fs::path input_directory_name;
+	if (!dirExists(path_simulated_dir)){
+		printf("please provide a valid input directory\n");
+		exit(0);
+	}
+	else {
+		input_directory_name = path_indir.filename();
+	}
+	
+	vector<string> regex_strings{"max\\d+(?=_)", "time\\d+\\.?\\d*(?=_)", "step\\d+\\.?\\d*(?=_)", "h\\d+\\.?\\d*(?=_)", "lower-*?\\d+\\.?\\d*(?=_)", "upper-*?\\d+\\.?\\d*(?=_)", "deg\\d+\\.?\\d*"};
+	vector<string> names{"max", "time", "step", "h", "lower", "upper", "deg"};
+	double max_count_double;
+	vector<double*> values{&max_count_double, &max_time, &step, &h, &lower_limit, &upper_limit, &k_deg};
+	
+	for (int i = 0; i < regex_strings.size(); ++i)
+	{
+		*values[i] = get_parameter_value(input_directory_name.c_str(), regex_strings[i], names[i]);
+	}
+	max_count = (int)max_count_double;
+	
+	// check directories
+	fs::path path_mode = path_indir.parent_path().filename();
+	string mode = path_mode.string();
+	fs::path path_input_parameters;
+	fs::path path_output_profiles;
+	tie(path_input_parameters, path_output_profiles) = run_path_checks(path_indir);
+	
+	printf("mode: %s\n", mode.c_str());
 	printf("max count: %i\n", max_count);
-	printf("max iterations: %i\n", max_iterations);
 	printf("max time in seconds: %f\n", max_time);
 	printf("batch size: %i\n", batch_size);
 	printf("step size: %f\n", step);
 	printf("h: %f\n", h);
-	
-	if (strcmp(mode, "mode") == 0){
-		printf("Please provide a mode. Options: no_np, no_knp, no_pnp, full_model.\n");
-		exit(0);
-	}
-	
-	// check directories
-	fs::path path_outdir (path_output_dir);
-	fs::path path_mode (mode);
-	fs::path path_parameters;
-	fs::path path_profiles;
-	tie(path_parameters, path_profiles) = run_path_checks(path_outdir, max_time, step, h, lower_limit, upper_limit, k_deg, path_mode);
 	
 	// test 0.0
 	double test = pow(10.0, -DBL_MAX);
@@ -614,7 +567,7 @@ int main(int argc, char** argv)
 	// can have different number of genes in params file vs. counts file so we need to match them up
 	// create a dict with 
 	printf("reading parameters file...\n");
-	ifstream paramsfile(path_params);
+	ifstream paramsfile(path_input_parameters.c_str());
 	vector<string> rows_params;
 	std::string line_params;
 	vector<string> param_gene_names;
@@ -632,14 +585,14 @@ int main(int argc, char** argv)
 	std::size_t pos = 0;
 	for (int i=1; i<rows_params.size(); ++i){
 		// the first thing will be a string gene_id
-		last_pos = -1;
+		last_pos = (size_t)-1;
 		pos = rows_params[i].find(",", last_pos + 1);
 		param_gene_names.push_back(rows_params[i].substr(last_pos + 1, pos - last_pos - 1));
 	}
 	
 	// load real distributions from cell count matrix
 	// also make initial guesses for parameters
-	ifstream infile(path_input_matrices);
+	ifstream infile(path_input_counts);
 	vector<string> rows;
 	vector<string> count_gene_names;
 	std::string line;
@@ -763,7 +716,7 @@ int main(int argc, char** argv)
 			
 			int i_gene_real = map_param[i_gene];
 			
-			last_pos = -1;
+			last_pos = (size_t)-1;
 			pos = rows_params[i].find(",", last_pos + 1);
 			last_pos = pos;
 			
@@ -805,13 +758,13 @@ int main(int argc, char** argv)
 	double param_lower_limits[num_params] = {lower_limit, 		lower_limit, 	lower_limit, 	lower_limit,	0.0, k_deg};
 	double param_upper_limits[num_params] = {upper_limit, 		upper_limit, 	upper_limit, 	upper_limit,	1.0, k_deg};
 	
-	if (strcmp(mode, "no_np") == 0){
+	if (strcmp(mode.c_str(), "no_np") == 0){
 		param_lower_limits[3] = -DBL_MAX;
 		param_upper_limits[3] = -DBL_MAX;
 		param_lower_limits[4] = 0.0;
 		param_upper_limits[4] = 0.0;
 	}
-	else if (strcmp(mode, "const") == 0){
+	else if (strcmp(mode.c_str(), "const") == 0){
 		param_lower_limits[0] = DBL_MAX;
 		param_upper_limits[0] = DBL_MAX;
 		param_lower_limits[1] = -DBL_MAX;
@@ -821,15 +774,15 @@ int main(int argc, char** argv)
 		param_lower_limits[4] = 0.0;
 		param_upper_limits[4] = 0.0;
 	}
-	else if (strcmp(mode, "no_knp") == 0){
+	else if (strcmp(mode.c_str(), "no_knp") == 0){
 		param_lower_limits[3] = -DBL_MAX;
 		param_upper_limits[3] = -DBL_MAX;
 	}
-	else if (strcmp(mode, "no_pnp") == 0){
+	else if (strcmp(mode.c_str(), "no_pnp") == 0){
 		param_lower_limits[4] = 0.0;
 		param_upper_limits[4] = 0.0;
 	}
-	else if (strcmp(mode, "full_model") == 0){
+	else if (strcmp(mode.c_str(), "full_model") == 0){
 		printf("All parameters selected.\n");
 	}
 	else {
@@ -945,7 +898,7 @@ int main(int argc, char** argv)
 		
 		printf("processing combination batch %i, num combinations: %i...\n", i_batch + 1, i_param_combination);
 		
-		simulate<<<numBlocks, blockSize>>>(max_iterations, max_time, num_cells, num_genes, num_genes_in_batch, num_combinations_per_gene, i_batch, batch_size, i_param_combination, num_params, max_count, h, param_combinations, transcriptional_states, mrna_count, simulated_distributions, real_mrna_count, log_likelihoods, devStates);
+		simulate<<<numBlocks, blockSize>>>(max_time, num_cells, num_genes, num_genes_in_batch, num_combinations_per_gene, i_batch, batch_size, i_param_combination, num_params, max_count, h, param_combinations, transcriptional_states, mrna_count, simulated_distributions, real_mrna_count, log_likelihoods, devStates);
 		
 		cudaEventRecord(stop);
 		cudaDeviceSynchronize();
@@ -960,25 +913,19 @@ int main(int argc, char** argv)
 	// need to output parameter combinations file
 	
 	// need to output ll for each combination
-	
-	// open params file
-	FILE *outfile_parameters;
-	outfile_parameters = fopen(path_parameters.c_str(), "w");//create a file
 	FILE *outfile_profiles;
-	outfile_profiles = fopen(path_profiles.c_str(), "w");//create a file
+	outfile_profiles = fopen(path_output_profiles.c_str(), "w");//create a file
 	
-	printf("writing %s\n", path_parameters.c_str());
-	fprintf(outfile_parameters, "gene,on,off,tx,np,p_np,deg,\n");
+	printf("writing %s\n", path_output_profiles.c_str());
+	fprintf(outfile_profiles, "gene,on,off,tx,np,p_np,deg,log_likelihood\n");
 	for (int i_param_combination = 0; i_param_combination < num_param_combinations; i_param_combination++){
 		int i_gene = i_param_combination / num_combinations_per_gene;
-		fprintf(outfile_parameters, "%s,", gene_names[i_gene].c_str());
+		fprintf(outfile_profiles, "%s,", gene_names[i_gene].c_str());
 		for (int i_param = 0; i_param < num_params; i_param++){
-			fprintf(outfile_parameters, "%.16f,", param_combinations_vector[i_param_combination][i_param]);
+			fprintf(outfile_profiles, "%.16f,", param_combinations_vector[i_param_combination][i_param]);
 		}
-		fprintf(outfile_parameters,"\n");
 		fprintf(outfile_profiles, "%.16f\n", log_likelihoods[i_param_combination]);
 	}
-	fclose(outfile_parameters);
 	fclose(outfile_profiles);
 
 	// Free memory
