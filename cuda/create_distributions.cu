@@ -32,6 +32,8 @@ int batch_size = 1000000;
 double lower_limit = -5.0; // lower limit for parameters
 double upper_limit = 2.0; // upper limit for parameters
 double k_deg = -1.0;
+int kde_granularity = 2;
+int num_cells = 1000;
 
 class GZipWriter {
 public:
@@ -52,11 +54,25 @@ public:
 		if (!file) {
 			return false;
 		}
+		
+		const size_t chunk_size = (128 * 1024 * 1024) / sizeof(double); // 128MB
+		size_t chunks = size / chunk_size;
+		size_t remainder = size % chunk_size;
+		
+		for (size_t i = 0; i < chunks; ++i) {
+			int res = gzwrite(file, data + i * chunk_size, chunk_size * sizeof(double));
+			if (res == 0) {
+				std::cerr << "Failed to write to file" << std::endl;
+				return false;
+			}
+		}
 
-		int res = gzwrite(file, data, size * sizeof(double));
-		if (res == 0) {
-			std::cerr << "Failed to write to file" << std::endl;
-			return false;
+		if (remainder > 0) {
+			int res = gzwrite(file, data + chunks * chunk_size, remainder * sizeof(double));
+			if (res == 0) {
+				std::cerr << "Failed to write remainder to file" << std::endl;
+				return false;
+			}
 		}
 
 		return true;
@@ -85,7 +101,7 @@ int dirExists(const char *path)
 		return 0;
 }
 
-tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int max_count, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
+tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int max_count, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, int num_cells, int kde_granularity, fs::path mode_dir){
 	// check to see if output_dir exists
 	if (!dirExists(path_outdir.c_str())){
 		printf("%s directory does not exist, please create\n", path_outdir.c_str());
@@ -95,7 +111,7 @@ tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int m
 		printf("%s directory exists\n", path_outdir.c_str());
 	}
 	
-	string rundir_string = concatenate("max", max_count) + concatenate("_time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
+	string rundir_string = concatenate("ncell", num_cells) + concatenate("_gran", kde_granularity) + concatenate("_max", max_count) + concatenate("_time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
 	fs::path rundir (rundir_string);
 	fs::path path_mode_dir = path_outdir / mode_dir;
 	
@@ -307,6 +323,14 @@ int parseCommand(int argc, char **argv) {
 			max_count=atoi(argv[i+1]);
 			i=i+2;
 		}
+		else if (strcmp(argv[i], "-g") == 0){
+			kde_granularity=atoi(argv[i+1]);
+			i=i+2;
+		}
+		else if (strcmp(argv[i], "-ncell") == 0){
+			num_cells=atoi(argv[i+1]);
+			i=i+2;
+		}
 		else{
 			return 0;
 		}
@@ -510,7 +534,7 @@ vector<vector<double>> cart_product (const vector<vector<double>>& v) {
 
 // nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_distributions.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions -lcurand -lboost_filesystem -lboost_system -lineinfo -lz
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions -mt 10.0 -mc 400 -s 0.1 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated -mode no_np -ll -3.0 -ul 3.0 -d 0.0
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions -mt 10.0 -mc 400 -s 0.1 -h 2.0 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated -mode no_np -ll -3.0 -ul 3.0 -d 0.0 -g 4 -ncell 1000
 
 int main(int argc, char** argv)
 {
@@ -525,6 +549,8 @@ int main(int argc, char** argv)
 	printf("batch size: %i\n", batch_size);
 	printf("step size: %f\n", step);
 	printf("h: %f\n", h);
+	printf("kde granularity: %i\n", kde_granularity);
+	printf("number of cells: %i\n", num_cells);
 	
 	if (strcmp(mode, "mode") == 0){
 		printf("Please provide a mode. Options: no_np, no_knp, no_pnp, full_model.\n");
@@ -537,7 +563,7 @@ int main(int argc, char** argv)
 	fs::path path_kdes;
 	fs::path path_parameters;
 	fs::path path_counts;
-	tie(path_kdes, path_parameters, path_counts) = run_path_checks(path_outdir, max_count, max_time, step, h, lower_limit, upper_limit, k_deg, path_mode);
+	tie(path_kdes, path_parameters, path_counts) = run_path_checks(path_outdir, max_count, max_time, step, h, lower_limit, upper_limit, k_deg, num_cells, kde_granularity, path_mode);
 	
 	// test 0.0
 	double test = pow(10.0, -DBL_MAX);
@@ -547,8 +573,6 @@ int main(int argc, char** argv)
 		printf("0.0 test failed: %f\n", test);
 		exit(0);
 	}
-	
-	int kde_granularity = 2;
 	
 	// test inf
 	double inf_test = 10.0 / 0.0;
@@ -562,8 +586,6 @@ int main(int argc, char** argv)
 	total_m=(float)total_t/1048576.0;
 	used_m=total_m-free_m;
 	printf ("mem free %f MB, mem total %f MB, mem used %f MB\n", free_m, total_m, used_m);
-	
-	int num_cells = 1000;
 	
 	printf("number of cells: %i\n", num_cells);
 	
@@ -754,9 +776,18 @@ int main(int argc, char** argv)
 		writer.write_batch(simulated_distributions, size_kde_batch);
 		
 		for (int i_batch_combination = 0; i_batch_combination < i_param_combination; i_batch_combination++){
+			map<int, int> counts;
 			for (int i_cell = 0; i_cell < num_cells; i_cell++){
 				int i_cell_param_combination = i_cell * batch_size + i_batch_combination;
-				fprintf(outfile_counts, "%i,", mrna_count[i_cell_param_combination]);
+				int count = mrna_count[i_cell_param_combination];
+				if (counts.find(count) == counts.end()) {
+					counts[mrna_count[i_cell_param_combination]] = 1;
+				} else {
+					counts[mrna_count[i_cell_param_combination]]++;
+				}
+			}
+			for (auto i : counts){
+				fprintf(outfile_counts, "%i:%i,", i.first, i.second);
 			}
 			fprintf(outfile_counts, "\n");
 		}
