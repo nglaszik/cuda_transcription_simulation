@@ -15,6 +15,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <zlib.h>
 
 #include <boost/filesystem.hpp>
 #include <boost/algorithm/string/replace.hpp>
@@ -34,6 +35,62 @@ double max_time = 3600.0; // 1 hour
 double lower_limit = -5.0; // lower limit for parameters
 double upper_limit = 2.0; // upper limit for parameters
 double k_deg = -1.0;
+int kde_granularity = 1;
+
+class GZipReader {
+public:
+	GZipReader(const std::string& filename) {
+		file = gzopen(filename.c_str(), "rb");
+		if (!file) {
+			std::cerr << "Failed to open file: " << filename << std::endl;
+		}
+	}
+
+	~GZipReader() {
+		if (file) {
+			gzclose(file);
+		}
+	}
+
+	std::vector<double> read_data(size_t max_doubles) {
+		if (!file) {
+			return {};
+		}
+
+		std::vector<double> data;
+		double buffer[1024];  // 128MB ... when adjusted for later stuff
+		int bytesRead;
+		size_t totalDoublesRead = 0;
+		
+		while ((bytesRead = gzread(file, buffer, sizeof(buffer))) > 0) {
+			size_t elementsRead = bytesRead / sizeof(double);
+			
+			if (totalDoublesRead + elementsRead > max_doubles) {
+				elementsRead = max_doubles - totalDoublesRead;
+			}
+		
+			data.insert(data.end(), buffer, buffer + elementsRead);
+			totalDoublesRead += elementsRead;
+		
+			if (totalDoublesRead >= max_doubles) {
+				break;
+			}
+		}
+
+		if (bytesRead == -1) {
+			int errNum;
+			std::cerr << "Error reading file: " << gzerror(file, &errNum) << std::endl;
+			if (errNum) {
+				gzclearerr(file);
+			}
+		}
+
+		return data;
+	}
+
+private:
+	gzFile file = nullptr;
+};
 
 string concatenate(std::string const& name, float i)
 {
@@ -54,7 +111,7 @@ int dirExists(const char *path)
 		return 0;
 }
 
-tuple <fs::path, fs::path, fs::path, fs::path, fs::path, fs::path> run_path_checks(fs::path path_indir, fs::path path_outdir, int max_count, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
+tuple <fs::path, fs::path, fs::path, fs::path, fs::path, fs::path> run_path_checks(fs::path path_indir, fs::path path_outdir, int max_count, float max_time, float step, float h, float lower_limit, float upper_limit, float k_deg, int kde_granularity, fs::path mode_dir){
 	// check to see if output_dir exists
 	if (!dirExists(path_outdir.c_str())){
 		printf("%s directory does not exist, please create\n", path_outdir.c_str());
@@ -64,7 +121,7 @@ tuple <fs::path, fs::path, fs::path, fs::path, fs::path, fs::path> run_path_chec
 		printf("%s directory exists\n", path_outdir.c_str());
 	}
 	
-	string rundir_string = concatenate("max", max_count) + concatenate("_time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
+	string rundir_string = concatenate("gran", kde_granularity) + concatenate("_max", max_count) + concatenate("_time", max_time) + concatenate("_step", step) + concatenate("_h", h) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
 	fs::path rundir (rundir_string);
 	fs::path path_mode_dir = path_outdir / mode_dir;
 	
@@ -108,7 +165,7 @@ tuple <fs::path, fs::path, fs::path, fs::path, fs::path, fs::path> run_path_chec
 	
 	fs::path filename_simulated_counts ("counts.csv");
 	fs::path filename_simulated_parameters ("parameters.csv");
-	fs::path filename_simulated_kdes ("kdes.bin");
+	fs::path filename_simulated_kdes ("kdes.bin.gz");
 	
 	fs::path path_simulated_counts = path_indir / filename_simulated_counts;
 	fs::path path_simulated_parameters = path_indir / filename_simulated_parameters;
@@ -132,10 +189,11 @@ auto k(double val)
 }
 
 __device__
-auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, double h, int batch_size, int i_param_combination, int num_cells)
+auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, double h, int batch_size, int i_param_combination, int num_cells, int kde_granularity)
 {
+	
 	const double x_0 = 0.0;
-	const int Nx = max_count;
+	const int Nx = max_count * kde_granularity;
 	const double x_limit = (double)max_count;
 	const double p = 1.0 / (h * max_count);
 	const double hx = (x_limit - x_0)/(Nx - 1);
@@ -143,11 +201,13 @@ auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, do
 	
 	for(int i_x = 0; i_x < Nx; ++i_x)
 	{
-		int i_dist = i_param_combination * max_count + i_x;
+		int i_dist = i_param_combination * Nx + i_x;
 		double x = x_0 + i_x * hx;
 		double sum = 0;
 		for (int i_cell = 0; i_cell < num_cells; i_cell++) {
 			int i_cell_param_combination = i_cell * batch_size + i_param_combination;
+			//printf("filling distribution for cell %i, param combination %i, total index %i\n", i_cell, i_param_combination, i_cell_param_combination);
+			//if (i_param_combination == 0) printf("%i,", mrna_counts[i_cell_param_combination]);
 			sum += k_gpu((x - (double)mrna_counts[i_cell_param_combination]) / h);
 		}
 		distributions[i_dist] = p * sum;
@@ -155,13 +215,13 @@ auto generate_kde_gpu(double *distributions, int *mrna_counts, int max_count, do
 	}
 	// normalize
 	for(int i_x = 0; i_x < Nx; ++i_x){
-		int i_dist = i_param_combination * max_count + i_x;
+		int i_dist = i_param_combination * Nx + i_x;
 		distributions[i_dist] /= sum_total;
 	}
 };
 
 __global__
-void generate_kde_gpu_parallel(double *distributions, int *mrna_counts, int max_count, double h, int num_genes, int num_cells)
+void generate_kde_gpu_parallel(double *distributions, int *mrna_counts, int max_count, double h, int num_genes, int num_cells, int kde_granularity)
 {
 	
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -169,7 +229,7 @@ void generate_kde_gpu_parallel(double *distributions, int *mrna_counts, int max_
 		
 	for (int i_gene = index; i_gene < num_genes; i_gene+=stride) {
 		
-		generate_kde_gpu(distributions, mrna_counts, max_count, h, num_genes, i_gene, num_cells);
+		generate_kde_gpu(distributions, mrna_counts, max_count, h, num_genes, i_gene, num_cells, kde_granularity);
 		
 	}
 	
@@ -290,26 +350,25 @@ void setup_kernel(curandState * state, unsigned long seed, int N)
 }
 
 __global__
-void find_initial_best_fit(int num_genes, int batch_size, int num_combinations_in_batch, int i_batch, int max_count, double *simulated_distributions, double *real_distributions, double *best_mses, int *best_params){
+void find_initial_best_fit(int num_genes, int batch_size, int num_combinations_in_batch, int i_batch, int max_count, int kde_granularity, double *simulated_distributions, double *real_distributions, double *best_mses, int *best_params){
 	
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int stride = blockDim.x * gridDim.x;
 	
 	for (int i_gene = index; i_gene < num_genes; i_gene+=stride) {
+		if (i_gene % 1000 == 0) printf("processing gene %i\n", i_gene);
 		for (int i_param_combination = 0; i_param_combination < num_combinations_in_batch; i_param_combination++) {
-			//if (i_param_combination % 100000 == 0 && i_gene == 0) printf("processing param combination %i\n", i_param_combination);
 			double mse = 0.0;
-			for (int i_count = 0; i_count < max_count; i_count++ ) {
-				int i_real_count = i_gene * max_count + i_count;
-				int i_initial_count = i_param_combination * max_count + i_count;
-				mse += (simulated_distributions[i_initial_count] - real_distributions[i_real_count]) * (simulated_distributions[i_initial_count] - real_distributions[i_real_count]);
+			for (int i_x = 0; i_x < max_count * kde_granularity; i_x++) {
+				int i_real_count = i_gene * max_count * kde_granularity + i_x;
+				int i_simulated_count = i_param_combination * max_count * kde_granularity + i_x;
+				mse += (simulated_distributions[i_simulated_count] - real_distributions[i_real_count]) * (simulated_distributions[i_simulated_count] - real_distributions[i_real_count]);
 			}
 			
 			mse = mse / (double)max_count;
 			if (mse < best_mses[i_gene]){
 				best_mses[i_gene] = mse;
 				best_params[i_gene] = i_batch * batch_size + i_param_combination;
-				//printf("mse: %.16f, gene %i\n", mse, i_gene);
 			}
 		}
 	}
@@ -349,15 +408,42 @@ double get_parameter_value(string path_simulated_dir_string, string regex_string
 	
 }
 
+string readCountsLine(string line){
+	
+	size_t pos = 0;
+	size_t last_pos = (size_t)-1;
+	
+	string count_string;
+	string output_string;
+	
+	while (pos != std::string::npos){
+		pos = line.find(",", last_pos + 1);
+		if (line.substr(last_pos + 1, pos - last_pos - 1).empty()) {
+			count_string = "";
+		}
+		else {
+			count_string = line.substr(last_pos + 1, pos - last_pos - 1);
+			size_t pos_colon = count_string.find(":");
+			string mrna_count = count_string.substr(0, pos_colon);
+			int num_occurrences = stoi(count_string.substr(pos_colon + 1, -1));
+			for (int i = 0; i < num_occurrences; i++){
+				output_string = output_string + mrna_count + ",";
+			}
+		}
+		last_pos = pos;
+	}
+	return output_string;
+}
+
 // 3D to 1D and reverse
 // x = i % width;
 // y = (i / width)%height;
 // z = i / (width*height);
 //i = x + width*y + width*height*z;
 
-// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/fit_distributions_mse.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions_mse -lcurand -lboost_filesystem -lboost_system -lineinfo
+// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/fit_distributions_mse.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions_mse -lcurand -lboost_filesystem -lboost_system -lineinfo -lz
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions_mse -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated/no_np/max400_time1000_step0.1_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions_mse -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_junhao/no_np/ncell1000_gran1_max400_time10_step1_h0.5_lower-5_upper2_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
 
 // /home/data/nlaszik/cuda_simulation/code/cuda/build/fit_distributions_mse -bs 1000000 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv -d /home/data/nlaszik/cuda_simulation/output/simulated_methylation/k_on/max400_time10_step0.2_h2_lower-3_upper3_deg0 -o /home/data/nlaszik/cuda_simulation/output/SRP299892
 
@@ -384,16 +470,18 @@ int main(int argc, char** argv)
 		input_directory_name = path_indir.filename();
 	}
 	
-	vector<string> regex_strings{"max\\d+(?=_)", "time\\d+\\.?\\d*(?=_)", "step\\d+\\.?\\d*(?=_)", "h\\d+\\.?\\d*(?=_)", "lower-*?\\d+\\.?\\d*(?=_)", "upper-*?\\d+\\.?\\d*(?=_)", "deg\\d+\\.?\\d*"};
-	vector<string> names{"max", "time", "step", "h", "lower", "upper", "deg"};
+	vector<string> regex_strings{"gran\\d+(?=_)", "max\\d+(?=_)", "time\\d+\\.?\\d*(?=_)", "step\\d+\\.?\\d*(?=_)", "h\\d+\\.?\\d*(?=_)", "lower-*?\\d+\\.?\\d*(?=_)", "upper-*?\\d+\\.?\\d*(?=_)", "deg\\d+\\.?\\d*"};
+	vector<string> names{"gran", "max", "time", "step", "h", "lower", "upper", "deg"};
 	double max_count_double;
-	vector<double*> values{&max_count_double, &max_time, &step, &h, &lower_limit, &upper_limit, &k_deg};
+	double kde_granularity_double;
+	vector<double*> values{&kde_granularity_double, &max_count_double, &max_time, &step, &h, &lower_limit, &upper_limit, &k_deg};
 	
 	for (int i = 0; i < regex_strings.size(); ++i)
 	{
 		*values[i] = get_parameter_value(input_directory_name.c_str(), regex_strings[i], names[i]);
 	}
 	max_count = (int)max_count_double;
+	kde_granularity = (int)kde_granularity_double;
 	
 	// check directories
 	fs::path path_simulated_counts;
@@ -406,7 +494,7 @@ int main(int argc, char** argv)
 	fs::path path_output_parameters;
 	fs::path path_output_mses;
 	
-	tie(path_output_counts, path_output_parameters, path_output_mses, path_simulated_counts, path_simulated_params, path_simulated_kdes) = run_path_checks(path_indir, path_outdir, max_count, max_time, step, h, lower_limit, upper_limit, k_deg, path_mode);
+	tie(path_output_counts, path_output_parameters, path_output_mses, path_simulated_counts, path_simulated_params, path_simulated_kdes) = run_path_checks(path_indir, path_outdir, max_count, max_time, step, h, lower_limit, upper_limit, k_deg, kde_granularity, path_mode);
 	
 	int num_cells = 0;
 	int num_genes = 0;
@@ -506,12 +594,12 @@ int main(int argc, char** argv)
 	}
 	
 	int *best_params, *real_mrna_count;
-	double *real_distributions, *simulated_distributions, *best_mses;
+	double *simulated_distributions, *real_distributions, *best_mses;
 	
 	cudaMallocManaged(&best_mses, num_genes * sizeof(double));
 	cudaMallocManaged(&best_params, num_genes * sizeof(double));
-	cudaMallocManaged(&real_distributions, num_genes * max_count * sizeof(double));
-	cudaMallocManaged(&real_mrna_count, num_genes * num_cells * sizeof(int));
+	cudaMallocManaged(&real_mrna_count, num_genes * num_cells * sizeof(double));
+	cudaMallocManaged(&real_distributions, num_genes * max_count * kde_granularity * sizeof(double));
 	
 	// init best mses
 	for (int i_gene = 0; i_gene < num_genes; i_gene++) {
@@ -523,10 +611,6 @@ int main(int argc, char** argv)
 	//GENERATE KDES
 	///////////////////	
 	printf("generating real count kdes...\n");
-	// init real distributions
-	for (int i_fill = 0; i_fill < num_genes * max_count; i_fill++) {
-		real_distributions[i_fill] = 0.0;
-	}
 	int s = rows_real.size();
 	for (int i=1; i<s; ++i){
 		// the first thing will be a string cell_id
@@ -553,18 +637,19 @@ int main(int argc, char** argv)
 		}
 	}
 	
+	printf("got here\n");
+	
 	// set up to fit on gpu
 	int N_init = num_genes;
 	int blockSize_init = 32;
 	int numBlocks_init = (N_init + blockSize_init - 1) / blockSize_init;
-	generate_kde_gpu_parallel<<<numBlocks_init, blockSize_init>>>(real_distributions, real_mrna_count, max_count, h, num_genes, num_cells);
+	generate_kde_gpu_parallel<<<numBlocks_init, blockSize_init>>>(real_distributions, real_mrna_count, max_count, h, num_genes, num_cells, kde_granularity);
 	
 	int num_batches = (int)ceil(num_param_combinations / batch_size) + 1;
 	
 	printf("number of param combinations: %i, number of batches: %i\n", num_param_combinations, num_batches);
 	
-	cudaMallocManaged(&simulated_distributions, batch_size * max_count * sizeof(double));
-	double *simulated_distributions_host = new double[batch_size * max_count];
+	cudaMallocManaged(&simulated_distributions, batch_size * max_count * kde_granularity * sizeof(double));
 	
 	// Run kernel on the GPU
 	int N = num_genes;
@@ -576,41 +661,21 @@ int main(int argc, char** argv)
 	cudaEventCreate(&stop);
 	cudaEventRecord(start);
 	
-	FILE *file_kde;
-	file_kde = fopen(path_simulated_kdes.c_str(), "rb");
+	GZipReader reader(path_simulated_kdes.string());
 	
 	for (int i_batch = 0; i_batch < num_batches; i_batch++){
 		
 		printf("processing parameter batch %i, loading kdes into gpu memory...\n", i_batch + 1);
 		// read part of file into host memory
-		double *pt;
-		int i_combination_in_batch = 0;
-		for (int i_batch_combination = i_batch * batch_size; i_batch_combination < (i_batch + 1) * batch_size; i_batch_combination++){
-			if (i_batch_combination < num_param_combinations){
-				double sum_total = 0.0;
-				for (int i_count = 0; i_count < max_count; i_count++){
-					int i_dist = i_combination_in_batch * max_count + i_count;
-					pt = &simulated_distributions_host[i_dist];
-					fread(pt, sizeof(double), 1, file_kde);
-					simulated_distributions[i_dist] = simulated_distributions_host[i_dist];
-					sum_total += simulated_distributions_host[i_dist];
-				}
-				// normalize
-				for(int i_count = 0; i_count < max_count; i_count++){
-					int i_dist = i_combination_in_batch * max_count + i_count;
-					simulated_distributions[i_dist] /= sum_total;
-				}
-				i_combination_in_batch++;
-			}
-			else {
-				break;
-			}
+		int num_combinations_in_batch = min(batch_size, num_param_combinations - i_batch * batch_size);
+		unsigned long int num_values_to_read = num_combinations_in_batch * max_count * kde_granularity;
+		vector<double> kde_data = reader.read_data(num_values_to_read);
+		for (int i_data = 0; i_data < kde_data.size(); i_data++){
+			simulated_distributions[i_data] = kde_data[i_data];
 		}
-		
-		int num_combinations_in_batch = i_combination_in_batch;
 		printf("num combinations in batch: %i\n", num_combinations_in_batch);
 		
-		find_initial_best_fit<<<numBlocks, blockSize>>>(num_genes, batch_size, num_combinations_in_batch, i_batch, max_count, simulated_distributions, real_distributions, best_mses, best_params);
+		find_initial_best_fit<<<numBlocks, blockSize>>>(num_genes, batch_size, num_combinations_in_batch, i_batch, max_count, kde_granularity, simulated_distributions, real_distributions, best_mses, best_params);
 		
 		cudaEventRecord(stop);
 		cudaDeviceSynchronize();
@@ -620,8 +685,6 @@ int main(int argc, char** argv)
 		printf("Elapsed seconds: %f\n", milliseconds/1000);
 		
 	}
-	
-	fclose(file_kde);
 	
 	printf("%s\n", path_output_mses.c_str());
 	FILE *outfile_mse;
@@ -661,8 +724,9 @@ int main(int argc, char** argv)
 	{
 		for (int i_gene = 0; i_gene < num_genes; i_gene++){
 			if (best_params[i_gene] == i_count_combination){
+				string dense_string = readCountsLine(line);
 				fprintf(outfile_counts, "%s,", gene_names[i_gene].c_str());
-				fprintf(outfile_counts, "%s\n", line.c_str());
+				fprintf(outfile_counts, "%s\n", dense_string.c_str());
 			}
 		}
 		i_count_combination++;
@@ -671,7 +735,6 @@ int main(int argc, char** argv)
 	
 	// Free memory
 	delete [] param_combinations;
-	delete [] simulated_distributions_host;
 	cudaFree(real_mrna_count);
 	cudaFree(best_mses);
 	cudaFree(best_params);

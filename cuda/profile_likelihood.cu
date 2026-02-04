@@ -31,8 +31,9 @@ char mode[10]="mode";
 int max_count = 400;
 double step = 1.0;
 double h = 4.0; // bandwidth for kde
-double max_time = 3600.0; // 1 hour
-int batch_size = 1000000;
+double max_time = 10.0; // 10 hours
+int batch_size = 1800000;
+int genes_per_batch = 10000;
 double lower_limit = -5.0; // lower limit for parameters
 double upper_limit = 2.0; // upper limit for parameters
 double k_deg = -1.0;
@@ -211,8 +212,8 @@ int parseCommand(int argc, char **argv) {
 			strcpy(path_simulated_dir, argv[i+1]);
 			i=i+2;
 		}
-		else if (strcmp(argv[i], "-bs") == 0){
-			batch_size=atoi(argv[i+1]);
+		else if (strcmp(argv[i], "-gpb") == 0){
+			genes_per_batch=atoi(argv[i+1]);
 			i=i+2;
 		}
 		else{
@@ -280,7 +281,7 @@ void setup_kernel(curandState * state, unsigned long seed, int N)
 }
 
 __global__
-void simulate(double max_time, int num_cells, int num_genes, int num_genes_in_batch, int num_combinations_per_gene, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, double *simulated_distributions, int *real_mrna_count, double *log_likelihoods, curandState* globalState){
+void simulate(double max_time, int num_cells, int num_genes, int genes_per_batch, int num_combinations_per_gene, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double h, double *param_combinations, int *transcriptional_states, int *mrna_count, double *simulated_distributions, double *real_distributions, double *log_likelihoods, curandState* globalState){
 	
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int stride = blockDim.x * gridDim.x;
@@ -297,8 +298,10 @@ void simulate(double max_time, int num_cells, int num_genes, int num_genes_in_ba
 		
 		int i_gene_in_batch = i_param_combination / num_combinations_per_gene;
 		
-		int i_gene = i_batch * num_genes_in_batch + i_gene_in_batch;
+		int i_gene = i_batch * genes_per_batch + i_gene_in_batch;
 		int i_param_combination_full = i_batch * batch_size + i_param_combination;
+		
+		//printf("%i,%i,%i\n", i_gene_in_batch, i_gene, i_param_combination_full);
 		
 		// reset counts and states
 		for (int i_cell = 0; i_cell < num_cells; i_cell++){
@@ -404,15 +407,17 @@ void simulate(double max_time, int num_cells, int num_genes, int num_genes_in_ba
 		double log_likelihood = 0.0;
 		// cycle through counts of REAL distribution!
 		// so kde should be generated
-		for (int i_cell = 0; i_cell < num_cells; i_cell++) {
+		
+		for (int i_count = 0; i_count < max_count; i_count++) {
 			
-			int i_cell_gene = i_cell * num_genes + i_gene;
-			int real_count = real_mrna_count[i_cell_gene];
+			int i_real_count = i_gene * max_count + i_count;
+			int i_simulated_count = i_param_combination * max_count + i_count;
 			
-			int i_simulated_count = i_param_combination * max_count + real_count;
+			int count = (int)(real_distributions[i_real_count] * num_cells);
 			
-			log_likelihood += log(simulated_distributions[i_simulated_count]);
-			
+			if (count > 0){
+				log_likelihood += log(simulated_distributions[i_simulated_count]) * count;
+			}
 		}
 		log_likelihoods[i_param_combination_full] = log_likelihood;
 	}
@@ -478,7 +483,7 @@ double get_parameter_value(string path_simulated_dir_string, string regex_string
 	}
 	else {
 		printf("%s not found\n", name.c_str());
-		exit(0);
+		exit(1);
 	}
 	
 }
@@ -492,10 +497,10 @@ double get_parameter_value(string path_simulated_dir_string, string regex_string
 // nvcc /home/data/nlaszik/cuda_simulation/code/cuda/profile_likelihood.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/profile_likelihood -lcurand -lboost_filesystem -lboost_system -lineinfo
 
 // SRP299892
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/profile_likelihood -bs 1000000 -p /home/data/nlaszik/cuda_simulation/output/SRP299892_ll/no_np/max400_time10_step0.1_h2_lower-3_upper3_deg0 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/profile_likelihood -gpb 10000 -p /home/data/nlaszik/cuda_simulation/output/SRP299892_ll/no_np/gran1_max400_time10_step0.1_h0.5_lower-3_upper3_deg0 -i /home/data/Shared/shared_datasets/sc_rna_seq/data/SRP299892/seurat/transcript_counts/srr13336770_transcript_counts.filtered.norm.csv
 
 // TEST
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/profile_likelihood -bs 1000000 -p /home/data/nlaszik/cuda_simulation/output/test/no_np/max400_time10_step0.1_h2_lower-3_upper3_deg0 -i /home/data/nlaszik/cuda_simulation/input/test_input.csv
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/profile_likelihood -gpb 10000 -p /home/data/nlaszik/cuda_simulation/output/test/no_np/gran1_max400_time10_step0.1_h0.5_lower-3_upper3_deg0 -i /home/data/nlaszik/cuda_simulation/input/test_input.csv
 
 int main(int argc, char** argv)
 {
@@ -537,7 +542,7 @@ int main(int argc, char** argv)
 	printf("mode: %s\n", mode.c_str());
 	printf("max count: %i\n", max_count);
 	printf("max time in seconds: %f\n", max_time);
-	printf("batch size: %i\n", batch_size);
+	printf("genes per batch: %i\n", genes_per_batch);
 	printf("step size: %f\n", step);
 	printf("h: %f\n", h);
 	
@@ -831,20 +836,19 @@ int main(int argc, char** argv)
 	int num_param_combinations = i_combination;
 	int num_combinations_per_gene = num_param_combinations / num_genes;
 	
-	printf("num combinations: %i\n", num_param_combinations);
-	
 	int num_batches;
-	if (num_param_combinations <= batch_size) {
-		batch_size = num_param_combinations;
+	if (num_genes < genes_per_batch){
+		genes_per_batch = num_genes;
 		num_batches = 1;
-	}
-	else {
-		num_batches = (int)ceil(num_param_combinations / batch_size) + 1;
+	} else {
+		num_batches = (int)ceil(num_genes / genes_per_batch) + 1;
 	}
 	
-	int num_genes_in_batch = batch_size / num_combinations_per_gene;
+	batch_size = genes_per_batch * num_combinations_per_gene;
 	
-	printf("num batches: %i, final batch size: %i\n", num_batches, batch_size);
+	printf("num combinations: %i, num comb per gene: %i\n", num_param_combinations, num_combinations_per_gene);
+	
+	printf("num batches: %i, final batch size: %i, num genes in batch: %i\n", num_batches, batch_size, genes_per_batch);
 	
 	cudaMallocManaged(&transcriptional_states, batch_size * num_cells * sizeof(int));
 	cudaMallocManaged(&mrna_count, batch_size * num_cells * sizeof(int));
@@ -898,7 +902,7 @@ int main(int argc, char** argv)
 		
 		printf("processing combination batch %i, num combinations: %i...\n", i_batch + 1, i_param_combination);
 		
-		simulate<<<numBlocks, blockSize>>>(max_time, num_cells, num_genes, num_genes_in_batch, num_combinations_per_gene, i_batch, batch_size, i_param_combination, num_params, max_count, h, param_combinations, transcriptional_states, mrna_count, simulated_distributions, real_mrna_count, log_likelihoods, devStates);
+		simulate<<<numBlocks, blockSize>>>(max_time, num_cells, num_genes, genes_per_batch, num_combinations_per_gene, i_batch, batch_size, i_param_combination, num_params, max_count, h, param_combinations, transcriptional_states, mrna_count, simulated_distributions, real_distributions, log_likelihoods, devStates);
 		
 		cudaEventRecord(stop);
 		cudaDeviceSynchronize();

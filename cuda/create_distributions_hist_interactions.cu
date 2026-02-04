@@ -23,17 +23,17 @@ namespace fs = boost::filesystem;
 
 // init some values
 char path_output_dir[200]="path_output_dir";
+char path_params[200]="path_params";
 char mode[10]="mode";
 int max_count = 400;
 double step = 1.0;
-double h = 4.0; // bandwidth for kde
-double max_time = 3600.0; // 1 hour
-int batch_size = 1000000;
 double lower_limit = -5.0; // lower limit for parameters
 double upper_limit = 2.0; // upper limit for parameters
-double k_deg = -1.0;
-int num_cells = 0;
-int num_cpgs = 0;
+double max_time = 10.0; // 10 hours
+int batch_size = 1000000;
+double k_deg = 0.0;
+int num_cells = 1000;
+int num_decimals = 0;
 
 class GZipWriter {
 public:
@@ -101,7 +101,7 @@ int dirExists(const char *path)
 		return 0;
 }
 
-tuple <fs::path, fs::path, fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int max_count, float max_time, float step, float lower_limit, float upper_limit, float k_deg, fs::path mode_dir){
+tuple <fs::path, fs::path, fs::path> run_path_checks(fs::path path_outdir, int max_count, float max_time, float step, float lower_limit, float upper_limit, float k_deg, int num_cells, fs::path mode_dir, bool create_new_params){
 	// check to see if output_dir exists
 	if (!dirExists(path_outdir.c_str())){
 		printf("%s directory does not exist, please create\n", path_outdir.c_str());
@@ -111,7 +111,13 @@ tuple <fs::path, fs::path, fs::path, fs::path, fs::path> run_path_checks(fs::pat
 		printf("%s directory exists\n", path_outdir.c_str());
 	}
 	
-	string rundir_string =  concatenate("max", max_count) + concatenate("_time", max_time) + concatenate("_step", step) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
+	string rundir_string;
+	if (create_new_params){
+		rundir_string = concatenate("ncell", num_cells) + concatenate("_max", max_count) + concatenate("_time", max_time) + concatenate("_step", step) + concatenate("_lower", lower_limit) + concatenate("_upper", upper_limit) + concatenate("_deg", k_deg);
+	} else {
+		rundir_string = concatenate("ncell", num_cells) + concatenate("_max", max_count) + concatenate("_time", max_time) + "_custom_parameters";
+	}
+	
 	fs::path rundir (rundir_string);
 	fs::path path_mode_dir = path_outdir / mode_dir;
 	
@@ -148,16 +154,12 @@ tuple <fs::path, fs::path, fs::path, fs::path, fs::path> run_path_checks(fs::pat
 	fs::path filename_kdes ("kdes.bin.gz");
 	fs::path filename_parameters ("parameters.csv");
 	fs::path filename_counts ("counts.csv");
-	fs::path filename_cpgs ("cpgs.csv");
-	fs::path filename_times ("times.csv");
 	
 	fs::path path_kdes = path_run_dir / filename_kdes;
 	fs::path path_parameters = path_run_dir / filename_parameters;
 	fs::path path_counts = path_run_dir / filename_counts;
-	fs::path path_cpgs = path_run_dir / filename_cpgs;
-	fs::path path_times = path_run_dir / filename_times;
 	
-	return make_tuple(path_kdes, path_parameters, path_counts, path_cpgs, path_times);
+	return make_tuple(path_kdes, path_parameters, path_counts);
 	
 }
 
@@ -222,6 +224,10 @@ int parseCommand(int argc, char **argv) {
 			strcpy(path_output_dir, argv[i+1]);
 			i=i+2;
 		}
+		if (strcmp(argv[i], "-p") == 0){
+			strcpy(path_params, argv[i+1]);
+			i=i+2;
+		}
 		else if (strcmp(argv[i], "-mode") == 0){
 			strcpy(mode, argv[i+1]);
 			i=i+2;
@@ -246,24 +252,16 @@ int parseCommand(int argc, char **argv) {
 			batch_size=atoi(argv[i+1]);
 			i=i+2;
 		}
-		else if (strcmp(argv[i], "-ncell") == 0){
-			num_cells=atoi(argv[i+1]);
-			i=i+2;
-		}
-		else if (strcmp(argv[i], "-ncpg") == 0){
-			num_cpgs=atoi(argv[i+1]);
-			i=i+2;
-		}
-		else if (strcmp(argv[i], "-h") == 0){
-			h=atof(argv[i+1]);
-			i=i+2;
-		}
 		else if (strcmp(argv[i], "-d") == 0){
 			k_deg=atof(argv[i+1]);
 			i=i+2;
 		}
 		else if (strcmp(argv[i], "-mc") == 0){
 			max_count=atoi(argv[i+1]);
+			i=i+2;
+		}
+		else if (strcmp(argv[i], "-ncell") == 0){
+			num_cells=atoi(argv[i+1]);
 			i=i+2;
 		}
 		else{
@@ -290,14 +288,9 @@ int determine_event_alt(double prob_event, double *probs, int len_probs)
 	for(int i=0; i < len_probs; i++){
 		sum_probs += probs[i];
 	}
-	
-	double sum_norm = 0.0;
 	for(int i=0; i < len_probs; i++){
 		probs[i] = probs[i] / sum_probs;
-		sum_norm += probs[i];
 	}
-	
-	//printf("%f\n", sum_norm);
 	
 	double rand_sum = 0.0;
 	int i = 0;
@@ -305,34 +298,16 @@ int determine_event_alt(double prob_event, double *probs, int len_probs)
 		rand_sum += probs[i];
 		i += 1;
 	}
-	
-	// do some checks to make sure this is working
-	if (probs[0] == 0.0 && i-1 == 0){
-		printf("err:0\n");
-	}
-	
-	if (probs[1] == 0.0 && i-1 == 1){
-		printf("err:1\n");
-	}
-	
-	if (probs[2] == 0.0 && i-1 == 2){
-		printf("err:2\n");
-	}
-	
-	if (probs[3] == 0.0 && i-1 == 3){
-		printf("err:3\n");
-	}
-	
 	return i - 1;
 }
 
 __device__
-double determine_event(double dt_switch, double dt_express, double dt_methylate, double dt_degrade, int *i_event)
+double determine_event(double dt_np, double dt_switch, double dt_express, int *i_event)
 {
-	if (dt_switch <= dt_express && dt_switch <= dt_methylate && dt_switch <= dt_methylate){
-		// switch
+	if (dt_np <= dt_switch && dt_np <= dt_express){
+		// enter non-permissive
 		*i_event = 0;
-		return dt_switch;
+		return dt_np;
 	}
 	else if (dt_switch <= dt_express){
 		// switch on-off
@@ -353,14 +328,14 @@ void setup_kernel(curandState * state, unsigned long seed, int N)
 }
 
 __global__
-void simulate_initial(double max_time, int num_cells, int num_cpgs, int param_to_effect, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double *param_combinations, int *transcriptional_states, int *mrna_count, curandState* globalState){
+void simulate(double max_time, int num_cells, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double *param_combinations, int *transcriptional_states, int *mrna_count, double *simulated_distributions, curandState* globalState){
 	
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
 	int stride = blockDim.x * gridDim.x;
 		
 	for (int i_param_combination = index; i_param_combination < num_combinations_current_batch; i_param_combination+=stride) {
 		
-		if (i_param_combination % 100000 == 0){
+		if (i_param_combination % 10000 == 0){
 			printf("processing batch combo %i...\n", i_param_combination);
 		}
 		
@@ -371,106 +346,6 @@ void simulate_initial(double max_time, int num_cells, int num_cpgs, int param_to
 			transcriptional_states[i_cell_param_combination] = 0;
 		}
 		
-		// we simulate using the final resting state of the cpgs
-		int cpgs_to_methylate = (int)((double)num_cpgs * param_combinations[i_param_combination * num_params + 6]);
-		double cpg_effect = pow(param_combinations[i_param_combination * num_params + 4], (double)cpgs_to_methylate);
-		
-		for (int i_cell = 0; i_cell < num_cells; i_cell++) {
-			
-			int i_cell_param_combination = i_cell * batch_size + i_param_combination;
-			double time = 0.0;
-			int iteration = 0;
-			
-			// no longer using iterations... need to make sure we get to steady state
-			
-			while (time < max_time && mrna_count[i_cell_param_combination] < max_count) {
-				
-				double prob_switch;
-				double prob_express;
-				double prob_degrade;
-				
-				// degradation
-				prob_degrade = (double)mrna_count[i_cell_param_combination] * param_combinations[i_param_combination * num_params + 3]; //degradation of mrna
-				
-				// transcription
-				if (transcriptional_states[i_cell_param_combination] == 0){
-					// gene is off
-					if (param_to_effect == 0){
-						prob_switch = param_combinations[i_param_combination * num_params + 0] * cpg_effect;									// k_on
-					} else {
-						prob_switch = param_combinations[i_param_combination * num_params + 0];													// k_on
-					}
-					prob_express = 0.0;
-				} else {
-					// gene is on
-					if (param_to_effect == 1){
-						prob_switch = param_combinations[i_param_combination * num_params + 1] * cpg_effect;									// k_off
-						prob_express = param_combinations[i_param_combination * num_params + 2];												// k_tx
-					}
-					else if (param_to_effect == 3){
-						prob_switch = param_combinations[i_param_combination * num_params + 1];													// k_off
-						prob_express = param_combinations[i_param_combination * num_params + 2] * cpg_effect;									// k_tx
-					} else {
-						prob_switch = param_combinations[i_param_combination * num_params + 1];													// k_off
-						prob_express = param_combinations[i_param_combination * num_params + 2];												// k_tx
-					}
-				}
-				
-				// determine which event occurs & timestep
-				double dt = -log(generate(globalState, i_param_combination)) / (prob_switch + prob_express + prob_degrade);
-				double probs [3] = {prob_switch, prob_express, prob_degrade};
-				int len_probs = 3;
-				double prob_event = generate(globalState, i_param_combination);
-				int i_event = determine_event_alt(prob_event, probs, len_probs);
-				
-				time = time + dt;
-				iteration++;
-				
-				if (time < max_time){
-					if (i_event == 0){
-						// switch
-						if (transcriptional_states[i_cell_param_combination] == 1){
-							transcriptional_states[i_cell_param_combination] = 0;
-						} else {
-							transcriptional_states[i_cell_param_combination] = 1;
-						}
-					} 
-					else if (i_event == 1){
-						// transcribe
-						mrna_count[i_cell_param_combination]++;
-					}
-					else {
-						// degrade
-						mrna_count[i_cell_param_combination]--;
-						//printf("Degradation occurred!\n");
-					}
-				}
-			}
-		}	
-	}
-}
-
-__global__
-void simulate(double max_time, int num_cells, int num_cpgs, int param_to_effect, int i_batch, int batch_size, int num_combinations_current_batch, const int num_params, int max_count, double *param_combinations, int *transcriptional_states, int *mrna_count, int *num_meth_cpgs, double *time_max_methylation_reached, double *simulated_distributions, curandState* globalState){
-	
-	int index = blockIdx.x * blockDim.x + threadIdx.x;
-	int stride = blockDim.x * gridDim.x;
-		
-	for (int i_param_combination = index; i_param_combination < num_combinations_current_batch; i_param_combination+=stride) {
-		
-		if (i_param_combination % 100000 == 0){
-			printf("processing batch combo %i...\n", i_param_combination);
-		}
-		
-		// reset/initialize states
-		for (int i_cell = 0; i_cell < num_cells; i_cell++){
-			// don't reset count, we want it to carry over
-			int i_cell_param_combination = i_cell * batch_size + i_param_combination;
-			transcriptional_states[i_cell_param_combination] = 0;
-			num_meth_cpgs[i_cell_param_combination] = 0;
-			time_max_methylation_reached[i_cell_param_combination] = 0.0;
-		}
-		
 		for (int i_count = 0; i_count < max_count; i_count++){
 			int i_dist = i_param_combination * max_count + i_count;
 			simulated_distributions[i_dist] = 0.0;
@@ -479,72 +354,61 @@ void simulate(double max_time, int num_cells, int num_cpgs, int param_to_effect,
 		for (int i_cell = 0; i_cell < num_cells; i_cell++) {
 			
 			int i_cell_param_combination = i_cell * batch_size + i_param_combination;
+				
+			transcriptional_states[i_cell_param_combination] = 0;
 			double time = 0.0;
-			int iteration = 0;			
+			int iteration = 0;
+			
 			// no longer using iterations... need to make sure we get to steady state
 			
-			while (time < max_time && mrna_count[i_cell_param_combination] < max_count) {
+			while (time < max_time && mrna_count[i_cell_param_combination] < max_count - 1) {
 				
 				double prob_switch;
 				double prob_express;
 				double prob_degrade;
-				double prob_methylate;
-				double prob_demethylate;
-				double cpg_effect;
 				
 				// degradation
-				prob_degrade = (double)mrna_count[i_cell_param_combination] * param_combinations[i_param_combination * num_params + 3]; //degradation of mrna
+				if (mrna_count[i_cell_param_combination] > 0){
+					prob_degrade = (double)mrna_count[i_cell_param_combination] * param_combinations[i_param_combination * num_params + 3]; //degradation of mrna
+				} else {
+					prob_degrade = 0.0;
+				}
 				
-				// methylation
-				// 4 = effect_size
-				// 5 = k_meth
-				// 6 = k_demeth													
-				prob_methylate = (double)(num_cpgs - num_meth_cpgs[i_cell_param_combination]) * param_combinations[i_param_combination * num_params + 5];		// k_meth
-				prob_demethylate = (double)num_meth_cpgs[i_cell_param_combination] * param_combinations[i_param_combination * num_params + 6];					// k_demeth
+				// here we would have to check any interacting mrna products (for now, we can include protein later) and modify some parameter (likely k_on)
+				// we actually can't do this since cells aren't running in parallel... also we are not parallelizing over genes but parameter combinations
+				// we would need to change architecture of code completely. a simulated dataset would need to have everything defined beforehand
+				// actually would make for a lot fewer combinations
 				
-				cpg_effect = pow(param_combinations[i_param_combination * num_params + 4], (double)num_meth_cpgs[i_cell_param_combination]);	// effect_size... currently this is kind of like density or count i guess
+				// this might actually be kind of a logic puzzle... you can only get the correct distribution through
 				
-				//printf("%f\n", cpg_effect);
+				// workflow:
+				// 1. Estimate params for some dataset (since gene dist is typically poisson/lognormal we can make some assumptions)
+				// 2. Get interactions through spearman correlations and use these to inform baseline interactions (maybe take from TKO dataset). This is good since maybe we can also use silencing interactions
+				// 3. Get the highest interactions here... all others can be ignored for efficiency
+				// 4. We need to consider directionality... this could be tricky... essentially the number of gene pair interactions squared? Very High N
+				// 3. We need to parallelize over cells. Each full run of a set of cells is one parameter combination essentially
+				// 4. still will take a long time since we need to loop over each other gene... using this we create a combined total modification of k_on (maybe just add them up?)
+				// 5. We can alter the interactions in some way once a run is completed and then 
 				
 				// transcription
 				if (transcriptional_states[i_cell_param_combination] == 0){
 					// gene is off
-					if (param_to_effect == 0){
-						prob_switch = param_combinations[i_param_combination * num_params + 0] * cpg_effect;									// k_on
-						if (prob_switch > 1000.0){
-							prob_switch = 1000.0;
-						}
-					} else {
-						prob_switch = param_combinations[i_param_combination * num_params + 0];													// k_on
-					}
+					prob_switch = param_combinations[i_param_combination * num_params + 0];	// k_on
 					prob_express = 0.0;
 				} else {
 					// gene is on
-					if (param_to_effect == 1){
-						prob_switch = param_combinations[i_param_combination * num_params + 1] * cpg_effect;									// k_off
-						prob_express = param_combinations[i_param_combination * num_params + 2];												// k_tx
-						if (prob_switch > 1000.0){
-							prob_switch = 1000.0;
-						}
-					}
-					else if (param_to_effect == 2){
-						prob_switch = param_combinations[i_param_combination * num_params + 1];													// k_off
-						prob_express = param_combinations[i_param_combination * num_params + 2] * cpg_effect;									// k_tx
-						if (prob_express > 1000.0){
-							prob_express = 1000.0;
-						}
-					} else {
-						prob_switch = param_combinations[i_param_combination * num_params + 1];													// k_off
-						prob_express = param_combinations[i_param_combination * num_params + 2];												// k_tx
-					}
+					prob_switch = param_combinations[i_param_combination * num_params + 1];		// k_off
+					prob_express = param_combinations[i_param_combination * num_params + 2];	// k_tx
 				}
 				
 				// determine which event occurs & timestep
-				double dt = -log(generate(globalState, i_param_combination)) / (prob_switch + prob_express + prob_methylate + prob_demethylate + prob_degrade);
-				double probs [5] = {prob_switch, prob_express, prob_methylate, prob_demethylate, prob_degrade};
-				int len_probs = 5;
+				double dt = -log(generate(globalState, i_param_combination)) / (prob_np + prob_switch + prob_express + prob_degrade);
+				double probs [3] = {prob_switch, prob_express, prob_degrade};
+				int len_probs = 3;
 				double prob_event = generate(globalState, i_param_combination);
 				int i_event = determine_event_alt(prob_event, probs, len_probs);
+				
+				//printf("dt_np: %f, dt_switch: %f, dt_express: %f, state: %i, event: %i\n", dt_np, dt_switch, dt_express, transcriptional_states[i_cell_param_combination], i_event);
 				
 				time = time + dt;
 				iteration++;
@@ -561,14 +425,6 @@ void simulate(double max_time, int num_cells, int num_cpgs, int param_to_effect,
 					else if (i_event == 1){
 						// transcribe
 						mrna_count[i_cell_param_combination]++;
-					}
-					else if (i_event == 2){
-						// methylate
-						num_meth_cpgs[i_cell_param_combination]++;
-					}
-					else if (i_event == 3){
-						// methylate
-						num_meth_cpgs[i_cell_param_combination]--;
 					}
 					else {
 						// degrade
@@ -604,11 +460,13 @@ vector<vector<double>> cart_product (const vector<vector<double>>& v) {
 // z = i / (width*height);
 //i = x + width*y + width*height*z;
 
-// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_distributions_methylation.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -lcurand -lboost_filesystem -lboost_system -lineinfo -lz
+// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/create_distributions_hist.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_hist -lcurand -lboost_filesystem -lboost_system -lineinfo -lz
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -mt 320.0 -mc 400 -s 0.15 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_methylation -mode k_tx -ll -3.0 -ul 3.0 -d 0.0 -ncell 1000 -ncpg 10
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_hist -mt 10.0 -mc 400 -s 0.1 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_hist -mode no_np -ll -3.0 -ul 3.0 -d 0.0 -ncell 1000
 
-// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_methylation -mt 320.0 -mc 400 -s 0.15 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_methylation_test -mode k_tx -ll 2.0 -ul 2.0 -d 0.0 -ncell 1000 -ncpg 10
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_hist -mt 640.0 -mc 400 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_hist -mode no_np -ncell 3000 -p /home/data/nlaszik/cuda_simulation/output/SRP299892_junhao_cme/parameters.csv
+
+// /home/data/nlaszik/cuda_simulation/code/cuda/build/create_distributions_hist -mt 640.0 -mc 400 -bs 1000000 -o /home/data/nlaszik/cuda_simulation/output/simulated_hist_test -mode no_np -ncell 1000 -p /home/data/nlaszik/cuda_simulation/output/SRP299892_junhao_cme/test_parameters.csv
 
 int main(int argc, char** argv)
 {
@@ -619,15 +477,18 @@ int main(int argc, char** argv)
 	}
 	
 	printf("max count: %i\n", max_count);
-	printf("number of cells: %i\n", num_cells);
-	printf("number of cpgs: %i\n", num_cpgs);
 	printf("max time in seconds: %f\n", max_time);
 	printf("batch size: %i\n", batch_size);
+	printf("number of cells: %i\n", num_cells);
 	printf("step size: %f\n", step);
-	printf("h: %f\n", h);
 	
 	if (strcmp(mode, "mode") == 0){
 		printf("Please provide a mode. Options: no_np, no_knp, no_pnp, full_model.\n");
+		exit(0);
+	}
+	
+	if (step < 0.0000001){
+		printf("Step size too small. Please choose a value larger than 0.0000001\n");
 		exit(0);
 	}
 	
@@ -637,9 +498,6 @@ int main(int argc, char** argv)
 	fs::path path_kdes;
 	fs::path path_parameters;
 	fs::path path_counts;
-	fs::path path_cpgs;
-	fs::path path_times;
-	tie(path_kdes, path_parameters, path_counts, path_cpgs, path_times) = run_path_checks(path_outdir, max_count, max_time, step, lower_limit, upper_limit, k_deg, path_mode);
 	
 	// test 0.0
 	double test = pow(10.0, -DBL_MAX);
@@ -663,20 +521,21 @@ int main(int argc, char** argv)
 	used_m=total_m-free_m;
 	printf ("mem free %f MB, mem total %f MB, mem used %f MB\n", free_m, total_m, used_m);
 	
-	printf("number of cells: %i\n", num_cells);
-	
-	int *transcriptional_states, *mrna_count, *num_meth_cpgs;
-	double *param_combinations, *simulated_distributions, *time_max_methylation_reached;
+	int *transcriptional_states, *mrna_count;
+	double *param_combinations, *simulated_distributions;
 	
 	// creating parameter combinations
-	printf("creating parameter combinations...\n");
-	const int num_params = 7;
+	const int num_params = 6;
+	vector<vector<double>> param_combinations_vector;
+	int num_param_combinations;
+	
 	// these are rates / second 
 	// max rate should be once every 5 seconds = 720.0/hour = 0.2/sec... for high range, maybe instead just do linear rate changes 0.195, 0.19, 0.185, ... etc
 	// for low range, next is maybe 0.19, 0.18, 0.1
 	
 	// min rate should 5.0/hour = 0.005/sec... we can actually do smaller increments it seems maybe .0025?
 	
+	// k_on, k_off, k_tx, k_np, p_np, k_deg
 	
 	// perhaps we can do this on log scale?
 	
@@ -685,57 +544,132 @@ int main(int argc, char** argv)
 	// transformers for gene/gene interactions? a la protein-protein interaction?
 	
 	// since log range, we start with negatives
-	// k_on, k_off, k_tx, k_deg, effect_size, k_meth, k_demeth
-	
-	double multiplier = 10000000;
-	
-	int int_lower_limit = (int)(lower_limit * multiplier);
-	int int_upper_limit = (int)(upper_limit * multiplier);
-	
-	//int int_lower_limit = 1 * multiplier;
-	//int int_upper_limit = 1 * multiplier;
-	
-	int param_lower_limits[num_params] = {int_lower_limit, 		int_lower_limit, 	int_lower_limit, 	(int)(k_deg * multiplier),	(int)(-0.1 * multiplier),	(int)(-3.0 * multiplier),	(int)(-3.0 * multiplier)};
-	int param_upper_limits[num_params] = {int_upper_limit, 		int_upper_limit, 	int_upper_limit, 	(int)(k_deg * multiplier),	(int)(0.1 * multiplier),	(int)(0.0 * multiplier),	(int)(-0.0 * multiplier)};
-	
-	int param_to_effect = 0;
-	if (strcmp(mode, "k_on") == 0){
-		param_to_effect = 0;
-	}
-	else if (strcmp(mode, "k_off") == 0){
-		param_to_effect = 1;
-	}
-	else if (strcmp(mode, "k_tx") == 0){
-		param_to_effect = 2;
-	}
-	else {
-		printf("Invalid mode provided. Please designate as 'k_on', 'k_off', or 'k_tx'\n");
-		exit(0);
-	}
-	
-	int int_step = (int)(step * multiplier);
-	int step_effect = (int)(0.05 * multiplier);
-	int step_meth = (int)(0.5 * multiplier);
-	int step_demeth = (int)(0.5 * multiplier);
-	
-	int step_sizes[num_params] = {int_step, int_step, int_step, int_step, step_effect, step_meth, step_demeth};
-	
-	vector<vector<double>> param_matrix(num_params);
-	// create parameters combinations
-	int num_param_combinations = 1;
-	for (int i_param = 0; i_param < num_params; i_param++){
-		int param_size = 0;
-		for (int param = param_lower_limits[i_param]; param <= param_upper_limits[i_param]; param += step_sizes[i_param]){
-			double param_dbl = (double)param / multiplier;
-			param_matrix[i_param].push_back(pow(10.0, param_dbl));
-			param_size++;
+	if (strcmp(path_params, "path_params") == 0){
+		
+		tie(path_kdes, path_parameters, path_counts) = run_path_checks(path_outdir, max_count, max_time, step, lower_limit, upper_limit, k_deg, num_cells, path_mode, true);
+		
+		printf("creating parameter combinations...\n");
+		
+		double multiplier = 10000000;
+		
+		int int_lower_limit = (int)(lower_limit * multiplier);
+		int int_upper_limit = (int)(upper_limit * multiplier);
+		
+		int param_lower_limits[num_params] = {int_lower_limit, 		int_lower_limit, 	int_lower_limit, 	int_lower_limit,	(int)(0.0 * multiplier), (int)(k_deg * multiplier)};
+		int param_upper_limits[num_params] = {int_upper_limit, 		int_upper_limit, 	int_upper_limit, 	int_upper_limit,	(int)(1.0 * multiplier), (int)(k_deg * multiplier)};
+		
+		if (strcmp(mode, "no_np") == 0){
+			param_lower_limits[3] = -INT_MAX;
+			param_upper_limits[3] = -INT_MAX;
+			param_lower_limits[4] = 0;
+			param_upper_limits[4] = 0;
 		}
-		num_param_combinations *= param_size;
+		else if (strcmp(mode, "const") == 0){
+			param_lower_limits[0] = INT_MAX;
+			param_upper_limits[0] = INT_MAX;
+			param_lower_limits[1] = -INT_MAX;
+			param_upper_limits[1] = -INT_MAX;
+			param_lower_limits[3] = -INT_MAX;
+			param_upper_limits[3] = -INT_MAX;
+			param_lower_limits[4] = 0;
+			param_upper_limits[4] = 0;
+		}
+		else if (strcmp(mode, "no_knp") == 0){
+			param_lower_limits[3] = -INT_MAX;
+			param_upper_limits[3] = -INT_MAX;
+		}
+		else if (strcmp(mode, "no_pnp") == 0){
+			param_lower_limits[4] = 0;
+			param_upper_limits[4] = 0;
+		}
+		else if (strcmp(mode, "full_model") == 0){
+			printf("All parameters selected.\n");
+		}
+		else {
+			printf("Invalid mode provided. Please designate as 'const', 'no_np', 'no_knp', 'no_pnp', or 'full_model'\n");
+			exit(0);
+		}
+		
+		int int_step = (int)(step * multiplier);
+		int step_sizes[num_params] = {int_step, int_step, int_step, int_step, int_step, int_step};
+		
+		vector<vector<double>> param_matrix(num_params);
+		// create parameters combinations
+		num_param_combinations = 1;
+		for (int i_param = 0; i_param < num_params; i_param++){
+			int param_size = 0;
+			if (param_lower_limits[i_param] != -INT_MAX && param_lower_limits[i_param] != INT_MAX){
+				for (int param = param_lower_limits[i_param]; param <= param_upper_limits[i_param]; param += step_sizes[i_param]){
+					double param_dbl = (double)param / multiplier;
+					if (i_param == 4){
+						// p_np is a probability, not a rate
+						param_matrix[i_param].push_back(param_dbl);
+					}
+					else {
+						// rate, so use log
+						param_matrix[i_param].push_back(pow(10.0, param_dbl));
+					}
+					param_size++;
+				}
+			}
+			else if (param_lower_limits[i_param] == INT_MAX){
+				param_matrix[i_param].push_back(DBL_MAX);
+				param_size++;
+			}
+			else {
+				param_matrix[i_param].push_back(0.0);
+				param_size++;
+			}
+			num_param_combinations *= param_size;
+		}
+		
+		printf("number of param combinations: %i\n", num_param_combinations);
+		
+		param_combinations_vector = cart_product(param_matrix);
+	
+	} else {
+		
+		tie(path_kdes, path_parameters, path_counts) = run_path_checks(path_outdir, max_count, max_time, step, lower_limit, upper_limit, k_deg, num_cells, path_mode, false);
+		
+		printf("loading existing parameter combinations...\n");
+		ifstream paramsfile(path_params);
+		vector<string> rows_params;
+		std::string line_params;
+		std::size_t last_pos = 0;
+		std::size_t pos = 0;
+		
+		while (getline(paramsfile, line_params, '\n'))
+		{
+			rows_params.push_back(line_params); //Get each line of the file as a string
+		}
+		num_param_combinations = rows_params.size() - 1;
+		printf("number of param combinations: %i\n", num_param_combinations);
+		
+		for (int i=1; i<rows_params.size(); ++i){
+			// the first thing will be a string cell_id
+			last_pos = (size_t)-1;
+			pos = 0;
+			
+			vector<double> holder_vector;
+			param_combinations_vector.push_back(holder_vector);
+			
+			int i_param = 0;
+			double parameter = 0.0;
+			while (pos != std::string::npos){
+				pos = rows_params[i].find(",", last_pos + 1);
+				if (rows_params[i].substr(last_pos + 1, pos - last_pos - 1).empty()) {
+					parameter = 0.0;
+				}
+				else {
+					parameter = stof(rows_params[i].substr(last_pos + 1, pos - last_pos - 1));
+					param_combinations_vector.back().push_back(parameter);
+					i_param++;
+				}
+				// initialize param values
+				last_pos = pos;
+			}
+		}
 	}
-	
-	printf("number of param combinations: %i\n", num_param_combinations);
-	
-	vector<vector<double>> param_combinations_vector = cart_product(param_matrix);
 	
 	int num_batches;
 	if (num_param_combinations <= batch_size) {
@@ -750,10 +684,10 @@ int main(int argc, char** argv)
 	
 	cudaMallocManaged(&transcriptional_states, batch_size * num_cells * sizeof(int));
 	cudaMallocManaged(&mrna_count, batch_size * num_cells * sizeof(int));
-	cudaMallocManaged(&num_meth_cpgs, batch_size * num_cells * sizeof(int));
-	cudaMallocManaged(&time_max_methylation_reached, batch_size * num_cells * sizeof(double));
 	cudaMallocManaged(&simulated_distributions, batch_size * max_count * sizeof(double));
 	cudaMallocManaged(&param_combinations, batch_size * num_params * sizeof(double));
+	
+	printf("size of distributions: %i\n", batch_size * max_count);
 	
 	// set up to fit on gpu
 	cudaEvent_t start, stop;
@@ -789,18 +723,11 @@ int main(int argc, char** argv)
 	FILE *outfile_counts;
 	outfile_counts = fopen(path_counts.c_str(), "w");
 	
-	FILE *outfile_cpgs;
-	outfile_cpgs = fopen(path_cpgs.c_str(), "w");
-	
-	FILE *outfile_times;
-	outfile_times = fopen(path_times.c_str(), "w");
-	
 	// open params file
 	FILE *outfile_parameters;
 	outfile_parameters = fopen(path_parameters.c_str(), "w");//create a file
-	fprintf(outfile_parameters, "on,off,tx,deg,eff,meth,demeth,\n");
-	
-	printf("successfully opened output files\n");
+	printf("writing %s\n", path_parameters.c_str());
+	fprintf(outfile_parameters, "on,off,tx,np,p_np,deg,\n");
 	
 	for (int i_batch = 0; i_batch < num_batches; i_batch++){
 		
@@ -811,7 +738,7 @@ int main(int argc, char** argv)
 				for (int i_param = 0; i_param < num_params; i_param++){
 					int i_param_combination_param = i_param_combination * num_params + i_param;
 					param_combinations[i_param_combination_param] = param_combinations_vector[i_batch_combination][i_param];
-					fprintf(outfile_parameters, "%f,", param_combinations[i_param_combination_param]);
+					fprintf(outfile_parameters, "%.16f,", param_combinations[i_param_combination_param]);
 				}
 				fprintf(outfile_parameters, "\n");
 				i_param_combination++;
@@ -823,21 +750,14 @@ int main(int argc, char** argv)
 		
 		printf("processing combination batch %i, num combinations: %i...\n", i_batch + 1, i_param_combination);
 		
-		simulate_initial<<<numBlocks, blockSize>>>(max_time, num_cells, num_cpgs, param_to_effect, i_batch, batch_size, i_param_combination, num_params, max_count, param_combinations, transcriptional_states, mrna_count, devStates);
+		simulate<<<numBlocks, blockSize>>>(max_time, num_cells, i_batch, batch_size, i_param_combination, num_params, max_count, param_combinations, transcriptional_states, mrna_count, simulated_distributions, devStates);
 		
 		cudaEventRecord(stop);
 		cudaDeviceSynchronize();
+		
 		float milliseconds = 0;
 		cudaEventElapsedTime(&milliseconds, start, stop);
-		printf("Elapsed seconds: %f\n", milliseconds/1000);
 		
-		double max_time_methylation = 16.0;
-		simulate<<<numBlocks, blockSize>>>(max_time_methylation, num_cells, num_cpgs, param_to_effect, i_batch, batch_size, i_param_combination, num_params, max_count, param_combinations, transcriptional_states, mrna_count, num_meth_cpgs, time_max_methylation_reached, simulated_distributions, devStates);
-		
-		cudaEventRecord(stop);
-		cudaDeviceSynchronize();
-		milliseconds = 0;
-		cudaEventElapsedTime(&milliseconds, start, stop);
 		printf("Elapsed seconds: %f\n", milliseconds/1000);
 		
 		long unsigned int size_kde_batch = i_param_combination * max_count;
@@ -847,26 +767,17 @@ int main(int argc, char** argv)
 			map<int, int> counts;
 			for (int i_cell = 0; i_cell < num_cells; i_cell++){
 				int i_cell_param_combination = i_cell * batch_size + i_batch_combination;
-				
 				int count = mrna_count[i_cell_param_combination];
 				if (counts.find(count) == counts.end()) {
 					counts[mrna_count[i_cell_param_combination]] = 1;
 				} else {
 					counts[mrna_count[i_cell_param_combination]]++;
 				}
-				
-				fprintf(outfile_cpgs, "%i,", num_meth_cpgs[i_cell_param_combination]);
-				fprintf(outfile_times, "%f,", time_max_methylation_reached[i_cell_param_combination]);
-				
 			}
-			
 			for (auto i : counts){
 				fprintf(outfile_counts, "%i:%i,", i.first, i.second);
 			}
-			
 			fprintf(outfile_counts, "\n");
-			fprintf(outfile_cpgs, "\n");
-			fprintf(outfile_times, "\n");
 		}
 	}
 
@@ -876,7 +787,6 @@ int main(int argc, char** argv)
 	cudaFree(simulated_distributions);
 	cudaFree(transcriptional_states);
 	cudaFree(mrna_count);
-	cudaFree(num_meth_cpgs);
 	cudaFree(devStates);
 	cudaFree(d_y);
 	return 0;

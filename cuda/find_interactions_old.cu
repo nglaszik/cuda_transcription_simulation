@@ -199,7 +199,7 @@ int parseCommand(int argc, char **argv) {
 
 }
 
-// function to simulate transcriptional bursting
+// function to find correlations
 __global__
 void find_correlations(int *batch_pairs, int i_batch, int num_cells, int batch_size, int num_pairs_in_batch, double *batch_correlations, int *mrna_counts)
 {
@@ -242,7 +242,7 @@ void find_correlations(int *batch_pairs, int i_batch, int num_cells, int batch_s
 	}
 }
 
-// nvcc /home/data/nlaszik/cuda_simulation/code/cuda/find_interactions.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/find_interactions
+// nvcc -std=c++17 /home/data/nlaszik/cuda_simulation/code/cuda/find_interactions.cu -o /home/data/nlaszik/cuda_simulation/code/cuda/build/find_interactions -lineinfo -lz
 
 
 // SRP215251
